@@ -18,19 +18,23 @@ from typing import Callable
 import customtkinter as ctk
 
 import notion_tools
+import templates
 from agent import friendly_error, summarize_pdfs
 
 
 class NoteCard(ctk.CTkFrame):
-    def __init__(self, master, *, attachments: list, title: str, date: str, client,
+    def __init__(self, master, *, attachments: list, title: str, date: str, client, template,
                  run_on_ui: Callable[[Callable], None], font, small_font):
         super().__init__(master, corner_radius=14, border_width=1, border_color=("#cbd5e1", "#4b5563"))
         self.attachments, self.client, self.run_on_ui = attachments, client, run_on_ui
+        self.template = template  # templates.Template: 정리 형식 + Notion 분류/유형
         self.initial_title = title  # 스레드에서 입력칸(위젯)을 읽으면 안 돼서 값으로 따로 보관
         self.grid_columnconfigure(0, weight=1)
 
         names = ", ".join(a.name for a in attachments)
-        ctk.CTkLabel(self, text=f"📝 {names}", font=small_font, anchor="w").grid(
+        icon = templates.TAB_ICON.get(template.category, "📄")
+        ctk.CTkLabel(self, text=f"{names}  →  {icon} {template.category} 탭 ({template.name})",
+                     font=small_font, anchor="w").grid(
             row=0, column=0, padx=12, pady=(10, 4), sticky="ew")
 
         # 제목 / 날짜 / 유형
@@ -44,8 +48,11 @@ class NoteCard(ctk.CTkFrame):
         self.date_entry = ctk.CTkEntry(meta, width=105, font=small_font, placeholder_text="YYYY-MM-DD")
         self.date_entry.insert(0, date)
         self.date_entry.pack(side="left", padx=(4, 10))
-        self.type_seg = ctk.CTkSegmentedButton(meta, values=["강의", "실습"], font=small_font)
-        self.type_seg.set("강의")
+        # 유형 기본값은 템플릿에서 (강의노트=강의, 회의록=실습, 주간회고=없음)
+        self.type_seg = ctk.CTkSegmentedButton(meta, values=["강의", "실습", "없음"], font=small_font)
+        self.type_seg.set(template.note_type or "없음")
+        if "주차" in template.title_rule:
+            self.title_entry.configure(width=110)  # '16주차 회고'가 안 잘리게
         self.type_seg.pack(side="left")
 
         # 정리본 (수정 가능)
@@ -67,7 +74,7 @@ class NoteCard(ctk.CTkFrame):
     # ------------------------------------------------------------ 정리 (스레드)
     def _summarize(self) -> None:
         try:
-            md = summarize_pdfs(self.client, self.attachments, self.initial_title)
+            md = summarize_pdfs(self.client, self.attachments, self.initial_title, self.template.name)
             self.run_on_ui(lambda: self._show_draft(md))
         except Exception as e:
             msg = friendly_error(e)
@@ -99,7 +106,8 @@ class NoteCard(ctk.CTkFrame):
 
     def _save(self, title, content, note_type, date) -> None:
         try:
-            r = notion_tools.create_note(title, content, note_type, date)
+            r = notion_tools.create_note(title, content, note_type, date,
+                                         self.template.category, self.template.topic)
             self.run_on_ui(lambda: self._saved(r["url"]))
         except Exception as e:
             msg = str(e)

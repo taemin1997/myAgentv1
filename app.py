@@ -17,10 +17,12 @@ from tkinter import filedialog
 
 import customtkinter as ctk
 import openai
+from tkinterdnd2 import DND_FILES, TkinterDnD
 
 import notion_tools
+import templates
 from agent import MODEL, friendly_error, new_conversation, run_turn
-from attachments import drop_old_pdf_bodies, load_pdf
+from attachments import FILE_TYPES, build_user_content, drop_old_pdf_bodies, load_file
 from note_cards import NoteCard
 from paths import ENV_FILE
 
@@ -57,9 +59,13 @@ def save_env(name: str, value: str) -> None:
     os.environ[name] = value
 
 
-class AssistantApp(ctk.CTk):
+class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
+    """CustomTkinter 창 + 파일 끌어다 놓기(tkinterdnd2).
+    tkinter 자체엔 드래그 앤 드롭이 없어서 tkdnd 확장을 창에 불러와야 함 (_require)."""
+
     def __init__(self) -> None:
         super().__init__()
+        self.TkdndVersion = TkinterDnD._require(self)
         self.title("개인 비서")
         self.geometry("520x720")
         self.minsize(380, 480)
@@ -71,9 +77,10 @@ class AssistantApp(ctk.CTk):
         self.messages = new_conversation()
         self.events: queue.Queue = queue.Queue()  # 작업 스레드 → 화면 전달용
         self.busy = False
-        self.attachments: list = []  # 다음 메시지에 같이 보낼 PDF들
+        self.attachments: list = []  # 다음 메시지에 같이 보낼 파일들 (PDF·문서·이미지)
 
         self._build_ui()
+        self._enable_drop()
         self.after(100, self._poll_events)
         self.after(200, self._ensure_api_key)
         # 켜자마자 노션 노트를 백그라운드로 최신화 (바뀐 것만 받으니 보통 금방 끝남)
@@ -121,6 +128,14 @@ class AssistantApp(ctk.CTk):
         self.attach_label.pack(side="top", anchor="w")
         actions = ctk.CTkFrame(self.attach_bar, fg_color="transparent")
         actions.pack(side="top", anchor="w", pady=(4, 0))
+        # 정리 방식 = prompts 폴더의 템플릿 (강의노트 / 회의록 / 주간회고 / 직접 추가한 것)
+        # 보여주는 이름(📅 일차 노트 · 강의) → 템플릿 이름(강의노트). Notion 탭과 같은 이름·아이콘
+        self.template_labels = templates.card_template_labels()
+        self.template_menu = ctk.CTkOptionMenu(actions, values=list(self.template_labels),
+                                               width=150, height=26, font=self.small_font,
+                                               dropdown_font=self.small_font)
+        self.template_menu.set(next(iter(self.template_labels)))
+        self.template_menu.pack(side="left", padx=(0, 6))
         ctk.CTkButton(actions, text="📝 노트로 정리", width=100, height=26, font=self.small_font,
                       command=self.make_note_cards).pack(side="left")
         self.merge_var = ctk.BooleanVar(value=False)
@@ -130,9 +145,9 @@ class AssistantApp(ctk.CTk):
                       fg_color="gray", command=self.clear_attachments).pack(side="left")
 
         self.attach_btn = ctk.CTkButton(bottom, text="📎", width=40, height=40, font=self.font,
-                                        fg_color="gray", command=self.attach_pdf)
+                                        fg_color="gray", command=self.attach_files)
         self.attach_btn.grid(row=1, column=0, padx=(14, 6), pady=12)
-        self.entry = ctk.CTkEntry(bottom, font=self.font, height=40, placeholder_text="메시지를 입력하세요 (Enter로 전송)")
+        self.entry = ctk.CTkEntry(bottom, font=self.font, height=40, placeholder_text="메시지 입력 (Enter) · 파일은 창에 끌어다 놓기")
         self.entry.grid(row=1, column=1, padx=(0, 6), pady=12, sticky="ew")
         self.entry.bind("<Return>", lambda _e: self.send())
         self.send_btn = ctk.CTkButton(bottom, text="전송", width=70, height=40, font=self.font, command=self.send)
@@ -205,19 +220,43 @@ class AssistantApp(ctk.CTk):
         self._add_bubble("새 대화를 시작합니다. 무엇을 도와드릴까요?", "bot")
 
     # ------------------------------------------------------------ 첨부
-    def attach_pdf(self) -> None:
-        paths = filedialog.askopenfilenames(title="정리할 PDF 선택", filetypes=[("PDF", "*.pdf")])
+    def attach_files(self) -> None:
+        paths = filedialog.askopenfilenames(title="첨부할 파일 선택 (여러 개 가능)", filetypes=FILE_TYPES)
+        self.add_files(paths)
+
+    def add_files(self, paths) -> None:
+        """📎 버튼과 끌어다 놓기가 같이 씀. 못 읽는 파일은 오류만 보여주고 나머지는 계속 첨부."""
+        if self.busy:
+            return
         for path in paths:
-            try:
-                att = load_pdf(path)
-            except Exception as e:
-                self._add_bubble(f"PDF를 열 수 없어요: {Path(path).name} ({e})", "error")
+            p = Path(path)
+            if p.is_dir():  # 폴더를 끌어오면 안에 있는 지원 파일 전부
+                self.add_files(sorted(str(f) for f in p.iterdir() if f.is_file()))
                 continue
-            self.attachments.append(att)
+            try:
+                self.attachments.append(load_file(p))
+            except Exception as e:
+                self._add_bubble(f"첨부 못 함: {p.name} ({e})", "error")
         self._refresh_attach_bar()
 
+    def _enable_drop(self) -> None:
+        """창 어디에 떨어뜨려도 받도록 창과 큰 영역들을 '놓기 대상'으로 등록.
+        (tkdnd는 마우스 아래 위젯이 등록돼 있어야 받아서, 창만 등록하면 대화 영역 위에선 안 될 수 있음)"""
+        targets = [self, self.chat, self.chat._parent_canvas, self.entry, self.status]
+        for w in targets:
+            try:
+                w.drop_target_register(DND_FILES)
+                w.dnd_bind("<<Drop>>", self._on_drop)
+            except Exception:
+                pass  # 일부 위젯이 등록을 못 해도 창 자체로 받으면 됨
+
+    def _on_drop(self, event):
+        # 경로에 공백이 있으면 {C:/my files/a.pdf} 처럼 중괄호로 묶여 옴 → splitlist 가 풀어 줌
+        self.add_files(self.tk.splitlist(event.data))
+        return event.action
+
     def make_note_cards(self) -> None:
-        """첨부한 PDF마다(또는 합쳐서 하나) 정리 카드를 만든다. 카드가 각자 모델에 따로 요청함."""
+        """첨부한 파일마다(또는 합쳐서 하나) 정리 카드를 만든다. 카드가 각자 모델에 따로 요청함."""
         if not self.attachments:
             return
         if self.client is None:
@@ -226,12 +265,16 @@ class AssistantApp(ctk.CTk):
                 return
         atts = sorted(self.attachments, key=lambda a: a.name)  # 파일 이름순 = 날짜순이라고 가정
         groups = [atts] if self.merge_var.get() else [[a] for a in atts]
+        # 고른 순간 파일을 다시 읽음 → 앱을 켜 둔 채 템플릿 파일을 고쳐도 바로 반영됨
+        name = self.template_labels.get(self.template_menu.get(), "강의노트")
+        template = templates.get_template(name) or templates.get_template("강의노트")
         try:
-            suggestions = notion_tools.suggest_next_days(len(groups))
+            suggestions = notion_tools.suggest_titles(template.title_rule, len(groups))
         except Exception:
             suggestions = [("", "")] * len(groups)
         for group, (title, date) in zip(groups, suggestions):
             card = NoteCard(self.chat, attachments=group, title=title, date=date, client=self.client,
+                            template=template,
                             run_on_ui=lambda fn: self.events.put(("call", fn)),
                             font=self.small_font, small_font=self.small_font)
             card.grid(row=self.chat_row, column=0, padx=14, pady=6, sticky="ew")
@@ -248,8 +291,12 @@ class AssistantApp(ctk.CTk):
         if not self.attachments:
             self.attach_bar.grid_forget()
             return
-        lines = [f"📎 {a.name} ({a.pages}쪽, {len(a.text):,}자)" + (f" ⚠️ {a.warning}" if a.warning else "")
-                 for a in self.attachments]
+        # 채팅으로 새 템플릿을 저장했을 수 있으니 첨부할 때마다 목록 갱신
+        self.template_labels = templates.card_template_labels()
+        self.template_menu.configure(values=list(self.template_labels))
+        if self.template_menu.get() not in self.template_labels:
+            self.template_menu.set(next(iter(self.template_labels)))
+        lines = [a.summary + (f" ⚠️ {a.warning}" if a.warning else "") for a in self.attachments]
         self.attach_label.configure(text="\n".join(lines))
         self.attach_bar.grid(row=0, column=0, columnspan=3, padx=14, pady=(8, 0), sticky="w")
         self.entry.focus()
@@ -264,24 +311,26 @@ class AssistantApp(ctk.CTk):
             if self.client is None:
                 return
         if not text:  # 첨부만 하고 바로 보낸 경우
-            text = "첨부한 PDF 내용을 공부 노트로 정리해줘."
-        # 화면엔 짧게, 모델에겐 PDF 본문까지
-        shown = text + "".join(f"\n📎 {a.name}" for a in self.attachments)
-        content = text + "".join(a.to_prompt() for a in self.attachments)
+            text = "첨부한 자료 내용을 공부 노트로 정리해줘."
+        # 화면엔 짧게, 모델에겐 본문(이미지는 그림 그대로)까지
+        shown = text + "".join(f"\n{a.summary}" for a in self.attachments)
+        content = build_user_content(text, self.attachments)
+        has_files = bool(self.attachments)
         self.attachments.clear()
         self._refresh_attach_bar()
 
         self.entry.delete(0, "end")
         self._add_bubble(shown, "user")
         self._set_busy(True)
-        threading.Thread(target=self._worker, args=(content,), daemon=True).start()
+        threading.Thread(target=self._worker, args=(content, has_files), daemon=True).start()
 
-    def _worker(self, text: str) -> None:
-        """작업 스레드: 화면을 직접 만지지 않고 events 큐에만 넣는다."""
-        if "[첨부 PDF:" in text:
-            drop_old_pdf_bodies(self.messages)
+    def _worker(self, content, has_files: bool = False) -> None:
+        """작업 스레드: 화면을 직접 만지지 않고 events 큐에만 넣는다.
+        content: 문자열, 또는 이미지가 섞이면 [텍스트, 이미지, …] 목록"""
+        if has_files:
+            drop_old_pdf_bodies(self.messages)  # 예전 첨부 본문·이미지는 빼서 비용이 안 쌓이게
         checkpoint = len(self.messages)
-        self.messages.append({"role": "user", "content": text})
+        self.messages.append({"role": "user", "content": content})
         try:
             answer = run_turn(
                 self.client, self.messages,

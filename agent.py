@@ -13,24 +13,23 @@ from typing import Callable
 import openai
 from dotenv import load_dotenv
 
+import templates
 from paths import ENV_FILE
+from attachments import build_user_content
 from tools import TOOL_SCHEMAS, run_tool
 
 load_dotenv(ENV_FILE)  # .env 파일의 OPENAI_API_KEY 를 환경변수로 불러옴
 
 MODEL = os.getenv("AGENT_MODEL", "gpt-5.4-mini")
+# 최종 프로젝트 페이지 갱신(긴 페이지 읽기 → 바뀐 섹션 고르기 → 기존 내용 살려서 합치기)처럼
+# 판단할 게 많은 작업만 상위 모델로. 평소 대화·검색·정리는 싼 MODEL 그대로.
+HEAVY_MODEL = os.getenv("AGENT_MODEL_HEAVY", "gpt-5.4")
+HEAVY_WINDOW = 12  # 최근 메시지 몇 개 안에 갱신 작업 흔적이 있으면 상위 모델 유지 ("응 반영해" 같은 다음 턴까지)
 MAX_STEPS = 15  # 질문 하나에 도구 호출을 반복하는 최대 횟수 (무한루프 방지)
 
-# 강의 PDF → 노트 정리 형식. 채팅(SYSTEM_PROMPT)과 정리 카드(summarize_pdfs)가 같이 씀
-NOTE_STYLE = """정리본 구조 (마크다운, 반말체 ~임/~함, 명령조 어미 X, 제목은 ###까지만):
-   # 주제 한 줄 요약
-   ## 오늘 배운 것 (핵심 키워드 3~6개 bullet)
-   ## 주제별 정리 → 각 주제마다 "무엇인지 → 왜 필요한지 → 어떻게 동작하는지" 순서
-   ## 코드 (PDF에 코드가 있으면 핵심만, 주석으로 이유 설명)
-   ## 헷갈리기 쉬운 점 / 비교 (있으면)
-   ## 한 줄 복습
-슬라이드 문장을 그대로 베끼지 말고 이해하기 쉽게 재구성하되, PDF의 주요 주제는 빠뜨리지 말 것.
-PDF에 없는 내용을 지어내지 말 것. 보충 설명을 덧붙일 땐 '(보충)'이라고 표시."""
+# 노트 정리 형식(강의노트·회의록·주간회고 …)은 templates.py → prompts/*.md 파일에 따로 저장함.
+# 시스템 프롬프트에는 이름만 넣고 본문은 정리할 때만 불러서, 매 요청마다 붙는 토큰을 줄임.
+templates.ensure_defaults()
 
 SYSTEM_PROMPT = """당신은 사용자의 개인 비서이자 공부 도우미입니다. 한국어로 친근하고 간결하게 답하세요.
 
@@ -51,16 +50,26 @@ SK AI 캠프(SKN AI 35기) 부트캠프 수강생이고 12월 수료 예정. 데
   저장 전에 제목과 내용을 먼저 보여준 뒤 확인을 받고 save_study_note로 저장하세요.
 - 코드 예시는 "왜 이렇게 하는지" 주석을 달아주세요.
 
-[PDF로 노트 만들기]
-사용자 메시지에 [첨부 PDF: ...] <<< 본문 >>> 이 붙어 오면 강의 자료임. 정리 요청이면:
-1. 제목: 사용자가 일차를 말하지 않았으면 list_study_notes(limit=3)로 마지막 'N일차'를 확인하고
-   'N+1일차'를 제안하세요. (밀린 날을 채우는 중일 수 있으니 번호는 꼭 사용자에게 확인)
-2. """ + NOTE_STYLE + """
-3. 정리본 전체를 먼저 보여주고 맨 마지막에 한 번만 "N일차로 저장할까?"라고 물은 뒤,
-   사용자가 승인하면 save_study_note로 저장하세요. 강의 날짜를 알면 date도 넣으세요.
-4. 첨부 텍스트가 거의 없으면 이미지/스캔 PDF라서 내용을 읽을 수 없다고 솔직히 말하세요.
-5. PDF가 여러 개고 날짜별로 따로 정리하려는 거면, 첨부창의 '📝 노트로 정리' 버튼을 쓰면
-   PDF마다 정리 카드가 따로 만들어진다고 안내하세요.
+[자료로 노트 만들기]  정리 방식(템플릿)이 저장돼 있음: 강의노트(강의 PDF), 회의록(프로젝트 회의록·기획 자료),
+프로젝트(미니프로젝트 1~4 같은 프로젝트 소개 페이지), 주간회고(한 주 정리), 면접(면접 예상 질문·답변),
+최종갱신(작업 순서) + 사용자가 추가한 것. Notion DB 탭 = 분류: 일차 노트 / 회고 / 프로젝트 / 면접.
+최종 프로젝트 자료(회의록·기획서 등)를 주면서 정리·갱신을 부탁하면 get_note_template('최종갱신')을 먼저 부르고
+그 순서대로 진행 (그날 일차 노트 + 최종 프로젝트 페이지 섹션 갱신).
+save_study_note로 DB에 어떤 종류의 페이지든 새로 만들 수 있음 (일차 노트·회고·프로젝트·면접). 자료가 없어도
+'템플릿만', '틀만' 만들어 달라면 해당 템플릿의 섹션 제목 + '(작성 예정)' 칸으로 빈 틀 페이지를 만들 것
+(빈 틀은 확인 없이 바로 만들어도 됨). 못 만든다고 하지 말 것. 이미 저장한 페이지를 다시 저장하지 말 것.
+메시지에 [첨부 파일: ...] <<< 본문 >>> 이나 [첨부 이미지: ...](그림 같이 옴)가 붙어 오거나 정리·페이지 생성을 요청하면:
+(이미지는 그림 속 글자·도형·화살표까지 읽어서 반영. 여러 파일이 같이 오면 한 날의 자료로 보고 합쳐서 정리)
+1. 자료 종류에 맞는 템플릿을 고르고 get_note_template으로 불러서 그 형식대로 정리하세요.
+   애매하면 어느 템플릿으로 할지 물어보세요. 83일차(11/6)부터는 최종 프로젝트 기간이라 회의록이 많음.
+2. 제목: 템플릿의 제목 규칙대로. 'N일차'는 사용자가 말 안 했으면 list_study_notes(limit=3)로 마지막 번호를
+   확인하고 다음 번호를 제안하세요 (밀린 날을 채우는 중일 수 있으니 번호는 꼭 확인).
+3. 정리본 전체를 먼저 보여주고 맨 마지막에 한 번만 "N일차로 저장할까?"라고 물은 뒤, 승인하면
+   save_study_note로 저장하세요. 템플릿의 분류(category)·유형(note_type)과 날짜를 같이 넣으세요.
+4. 사용자가 "앞으로 이렇게 정리해줘", "이 형식 기억해"라고 하면 save_note_template으로 정리 방식을 저장하세요.
+5. 스캔 PDF처럼 첨부 텍스트가 거의 없으면 읽을 수 없다고 솔직히 말하고, 페이지를 캡처해서 이미지로 첨부하라고 안내.
+6. 파일이 여러 개고 날짜별로 따로 정리하려는 거면, 첨부창의 '📝 노트로 정리' 버튼을 쓰면
+   파일마다 정리 카드가 따로 만들어진다고 안내하세요.
 
 [생활 비서 규칙]
 - 날짜/시간이 관련되면 get_current_time으로 실제 시간을 확인하세요.
@@ -76,6 +85,33 @@ def new_conversation() -> list:
     return [{"role": "system", "content": SYSTEM_PROMPT}]
 
 
+def _is_heavy_call(name: str, arguments: str) -> bool:
+    """상위 모델로 넘어가는 신호: 최종갱신 템플릿을 불렀거나, 기존 페이지 섹션을 고치는 도구를 씀."""
+    return name == "update_page_section" or (name == "get_note_template" and "최종갱신" in arguments)
+
+
+def pick_model(messages: list) -> str:
+    """갱신 작업 중이면 HEAVY_MODEL, 아니면 MODEL.
+
+    갱신은 '자료 읽고 계획 보여주기 → 사용자 확인("응 반영해") → 반영'으로 여러 턴에 걸쳐서,
+    최근 메시지를 순서대로 훑으며 상태를 추적함:
+      - 최종갱신 템플릿 호출 또는 섹션 수정 → 갱신 중
+      - 섹션 수정(update_page_section)까지 한 뒤 모델이 답을 마치면 → 갱신 끝, 다시 싼 모델
+    (갱신을 하다 말고 딴 얘기를 하면 HEAVY_WINDOW 만큼 지나서 자연히 풀림)"""
+    heavy = applied = False
+    for m in messages[-HEAVY_WINDOW:]:
+        calls = m.get("tool_calls") or []
+        for call in calls:
+            name, args = call["function"]["name"], call["function"]["arguments"]
+            if _is_heavy_call(name, args):
+                heavy = True
+            if name == "update_page_section":
+                applied = True
+        if m.get("role") == "assistant" and not calls and applied:  # 반영까지 끝내고 답한 턴
+            heavy = applied = False
+    return HEAVY_MODEL if heavy else MODEL
+
+
 def run_turn(
     client: openai.OpenAI,
     messages: list,
@@ -83,10 +119,18 @@ def run_turn(
 ) -> str:
     """도구 호출이 끝날 때까지 모델과 주고받고 최종 답변을 돌려준다.
     messages 는 이 과정에서 계속 늘어난다 (= 대화 기록).
-    on_tool(이름, 인자JSON) 은 도구를 실행할 때마다 불린다 (화면 표시용)."""
+    on_tool(이름, 인자JSON) 은 도구를 실행할 때마다 불린다 (화면 표시용).
+
+    모델은 매 단계 다시 고름: 처음엔 싼 모델로 시작했다가, 모델이 get_note_template('최종갱신')을
+    부르는 순간 다음 단계부터 상위 모델로 넘어감 (무슨 작업인지 판단 자체는 싼 모델이 해도 충분해서)."""
+    current = None
     for _ in range(MAX_STEPS):
+        model = pick_model(messages)
+        if model != current and model == HEAVY_MODEL and on_tool:
+            on_tool("⚡ 갱신 작업이라 상위 모델로 전환", model)
+        current = model
         response = client.chat.completions.create(
-            model=MODEL,
+            model=model,
             messages=messages,
             tools=TOOL_SCHEMAS,
         )
@@ -118,20 +162,24 @@ def run_turn(
     return "(도구 호출이 너무 많아 중단했어요. 질문을 나눠서 해 주세요.)"
 
 
-def summarize_pdfs(client: openai.OpenAI, attachments: list, title: str) -> str:
+def summarize_pdfs(client: openai.OpenAI, attachments: list, title: str, template: str = "강의노트") -> str:
     """PDF(들) → 노트 마크다운. 채팅 기록과 상관없는 1회성 호출.
 
     채팅으로 정리하면 PDF 본문과 정리본이 대화 기록에 계속 쌓여서 PDF가 많을수록 비싸지고,
     여러 노트 내용이 섞일 수도 있음. 그래서 '정리 카드'는 PDF(묶음)마다 새 대화로 따로 요청함.
+    template: prompts 폴더의 템플릿 이름 (강의노트 / 회의록 / 주간회고 …)
     """
-    pdf_text = "".join(a.to_prompt() for a in attachments)
+    t = templates.get_template(template) or templates.get_template("강의노트")
+    user_content = build_user_content(f"'{title}' 노트로 정리해줘.", attachments)  # 이미지는 그림 그대로
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": "부트캠프 강의 자료를 복습용 노트로 정리하는 도우미임.\n" + NOTE_STYLE
+            {"role": "system", "content": "부트캠프 수강생의 자료를 Notion 노트로 정리하는 도우미임.\n"
+             + t.system_prompt()
              + "\n정리본 마크다운만 출력할 것. 앞뒤 인사말이나 '저장할까?' 같은 질문은 쓰지 말 것."
-             + "\n첨부 텍스트가 거의 없으면 '이미지/스캔 PDF라서 내용을 읽을 수 없음' 한 줄만 출력."},
-            {"role": "user", "content": f"'{title}' 노트로 정리해줘." + pdf_text},
+             + "\n첨부 이미지는 그림 속 글자·도형까지 읽어서 반영할 것."
+             + "\n첨부 텍스트도 이미지도 거의 없으면 '이미지/스캔 PDF라서 내용을 읽을 수 없음' 한 줄만 출력."},
+            {"role": "user", "content": user_content},
         ],
     )
     return (response.choices[0].message.content or "").strip()

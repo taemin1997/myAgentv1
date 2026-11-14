@@ -27,6 +27,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
+import templates
 from curriculum import CURRICULUM, DATE_TO_DAY, PROJECTS
 from paths import DATA_DIR
 from toolkit import tool
@@ -39,6 +40,7 @@ AUTO_SYNC_AFTER = timedelta(minutes=30)  # 마지막 동기화 후 이만큼 지
 TITLE_PROP, TYPE_PROP, REVIEW_PROP = "강의명", "유형", "복습"
 DATE_PROP = "날짜"  # 강의 날짜. '작성일시'(created_time)는 API로 못 바꿔서 따로 추가한 속성
 TOPIC_PROP = "과목"  # 커리큘럼 기준 과목 (Python, 딥러닝, 프롬프트 엔지니어링 …)
+CATEGORY_PROP = "분류"  # 페이지 종류 = DB 탭 (일차 노트 / 회고 / 프로젝트 / 면접 / 기타)
 
 
 class NotionError(Exception):
@@ -116,7 +118,8 @@ def _block_to_text(block: dict) -> str:
     if t == "code":
         return f"```{v.get('language', '')}\n{text}\n```"
     if t == "table_row":
-        return " | ".join(_plain(cell) for cell in v.get("cells", []))
+        # 마크다운 표 모양 그대로 (| a | b |). 모델이 읽은 걸 고쳐서 다시 쓸 때 표로 되돌아가게
+        return "| " + " | ".join(_plain(cell) for cell in v.get("cells", [])) + " |"
     if t == "child_page":
         return f"(하위 페이지: {v.get('title', '')})"
     if t in ("divider",):
@@ -342,6 +345,12 @@ def _block(kind: str, text: str, **extra) -> dict:
     return {"object": "block", "type": kind, kind: {"rich_text": _rich(text), **extra}}
 
 
+def _is_table_sep(line: str) -> bool:
+    """'|---|---|' 또는 '--- | ---' 같은 표 구분줄인지."""
+    cells = [c.strip() for c in line.strip().strip("|").split("|")]
+    return len(cells) > 1 and all(re.fullmatch(r":?-{2,}:?", c) for c in cells)
+
+
 def _markdown_to_blocks(md: str) -> list[dict]:
     blocks, lines, i = [], md.splitlines(), 0
     while i < len(lines):
@@ -357,9 +366,26 @@ def _markdown_to_blocks(md: str) -> list[dict]:
                            "code": {"rich_text": [{"type": "text", "text": {"content": c}}
                                                   for c in _chunks("\n".join(code))],
                                     "language": lang if lang in _CODE_LANGS else "plain text"}})
+        elif s.startswith("|") or ("|" in s and i + 1 < len(lines) and _is_table_sep(lines[i + 1])):
+            # 표: '| a | b |' 줄들, 또는 바깥 | 없이 'a | b' + 다음 줄 '--- | ---' 인 경우도 표로 봄
+            rows = []
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                cells = [c.strip() for c in lines[i].strip().strip("|").split("|")]
+                if not all(re.fullmatch(r":?-{2,}:?", c) for c in cells):  # |---|---| 구분줄은 건너뜀
+                    rows.append(cells)
+                i += 1
+            i -= 1  # 아래 i += 1 과 맞추려고
+            width = max(len(r) for r in rows)
+            blocks.append({"object": "block", "type": "table", "table": {
+                "table_width": width, "has_column_header": True, "has_row_header": False,
+                # Notion 표는 모든 행의 칸 수가 같아야 해서 모자란 칸은 빈칸으로 채움
+                "children": [{"type": "table_row", "table_row": {
+                    "cells": [_rich(c) for c in r + [""] * (width - len(r))]}} for r in rows]}})
         elif m := re.match(r"^(#{1,6})\s+(.*)", s):
             # Notion 제목은 3단계까지라서 ####, ##### 등은 전부 heading_3 으로
             blocks.append(_block(f"heading_{min(len(m.group(1)), 3)}", m.group(2)))
+        elif m := re.match(r"^[-*] \[( |x|X)\] ?(.*)", s):  # 체크박스: - [ ] 할 일 / - [x] 끝난 일
+            blocks.append(_block("to_do", m.group(2), checked=m.group(1) != " "))
         elif s.startswith(("- ", "* ")):
             blocks.append(_block("bulleted_list_item", s[2:]))
         elif re.match(r"^\d+\. ", s):
@@ -480,18 +506,37 @@ def list_study_notes(only_not_reviewed: bool = False, limit: int = 20) -> str:
     return f"전체 {len(pages)}개 중 {min(limit, len(pages))}개:\n" + "\n".join(lines)
 
 
-def create_note(title: str, content: str, note_type: str = "강의", date: str = "") -> dict:
+def guess_category(title: str) -> str:
+    """제목으로 Notion '분류'를 추측. 'N일차' → 일차 노트, '회고' → 회고, 그 외 → 기타."""
+    t = title.strip()
+    if re.fullmatch(r"\d+일차", t):
+        return "일차 노트"
+    if "회고" in t:
+        return "회고"
+    if "면접" in t:
+        return "면접"
+    if "프로젝트" in t:
+        return "프로젝트"
+    return "기타"
+
+
+def create_note(title: str, content: str, note_type: str = "강의", date: str = "",
+                category: str = "", topic: str = "") -> dict:
     """노트를 Notion DB에 만든다. 채팅 도구(save_study_note)와 GUI 정리 카드가 같이 씀.
+    category(분류)를 비우면 제목으로 추측함 (탭에서 바로 보이게 하려고 항상 채움).
     실패하면 NotionError. 성공하면 {"url", "blocks"}."""
     blocks = _markdown_to_blocks(content)
     props = {TITLE_PROP: {"title": _rich(title)}}
     if note_type in ("강의", "실습"):
         props[TYPE_PROP] = {"select": {"name": note_type}}
+    props[CATEGORY_PROP] = {"select": {"name": category or guess_category(title)}}
     # 'N일차' 노트면 커리큘럼에서 과목을 채우고, 날짜를 안 줬으면 커리큘럼 날짜를 씀
     if (m := re.fullmatch(r"(\d+)일차", title.strip())) and int(m.group(1)) in CURRICULUM:
-        cur_date, _course, topic = CURRICULUM[int(m.group(1))]
-        props[TOPIC_PROP] = {"select": {"name": topic}}
+        cur_date, _course, cur_topic = CURRICULUM[int(m.group(1))]
+        topic = topic or cur_topic
         date = date or cur_date
+    if topic:  # 일차 노트는 커리큘럼에서, 프로젝트 페이지 등은 넘겨받은 값으로 (예: 최종 프로젝트)
+        props[TOPIC_PROP] = {"select": {"name": topic}}
     if date:
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date):
             raise NotionError(f"날짜 형식이 이상함: {date} (YYYY-MM-DD 로 써야 함)")
@@ -531,6 +576,20 @@ def suggest_next_days(count: int) -> list[tuple[str, str]]:
     return out
 
 
+def suggest_titles(title_rule: str, count: int) -> list[tuple[str, str]]:
+    """템플릿의 제목 규칙에 맞는 (제목, 날짜) 제안.
+    'N일차' → suggest_next_days, 'N주차 회고' → 마지막 회고 번호 + 1 (날짜는 오늘)."""
+    if "일차" in title_rule:
+        return suggest_next_days(count)
+    if "주차" not in title_rule:  # 프로젝트 페이지처럼 제목이 자유인 템플릿
+        return [("", datetime.now().strftime("%Y-%m-%d"))] * count
+    pages = _load_cache()["pages"].values()
+    weeks = [int(m.group(1)) for p in pages if (m := re.match(r"(\d+)주차", p["title"].strip()))]
+    last = max(weeks, default=0)
+    today = datetime.now().strftime("%Y-%m-%d")
+    return [(f"{last + i}주차 회고", today) for i in range(1, count + 1)]
+
+
 @tool
 def get_curriculum(query: str = "") -> str:
     """부트캠프 커리큘럼(1~120일차, 2026-07-07 ~ 12-30)과 단위·최종 프로젝트 정보를 알려줍니다.
@@ -564,19 +623,37 @@ def get_curriculum(query: str = "") -> str:
     return "커리큘럼 요약:\n" + "\n".join(lines) + "\n\n프로젝트:\n" + PROJECTS
 
 
+_CREATED: dict[str, str] = {}  # 이번 실행에서 만든 페이지 제목 → url (중복 생성 방지)
+
+
 @tool
-def save_study_note(title: str, content: str, note_type: str = "강의", date: str = "") -> str:
-    """정리한 공부 내용을 Notion 부트캠프 DB에 새 노트로 저장합니다.
-    저장하기 전에 사용자에게 제목과 내용을 보여주고 확인을 받으세요.
+def save_study_note(title: str, content: str, note_type: str = "강의", date: str = "",
+                    category: str = "", topic: str = "") -> str:
+    """Notion 부트캠프 DB에 새 페이지를 만듭니다. 일차 노트뿐 아니라 회고, 프로젝트 정리 페이지,
+    면접 질문 페이지 등 DB에 들어가는 모든 종류의 페이지를 만들 수 있음. 내용이 아직 없으면
+    '(작성 예정)' 칸만 있는 빈 틀(템플릿) 페이지로 만들어도 됨.
+    만들기 전에 get_note_template으로 맞는 템플릿(일차 노트=강의노트/회의록, 프로젝트=프로젝트, 회고=주간회고)을
+    불러서 그 섹션 구조를 그대로 따르세요. 내용이 있는 노트는 먼저 보여주고 확인을 받은 뒤 저장하세요.
 
     Args:
-        title: 노트 제목. 기존 규칙대로 'N일차' 형식을 권장. 예: 75일차.
-        content: 마크다운 본문. #, ##, -, 1., ```코드```, **굵게** 지원. 반말체(~임/~함)로 작성.
-        note_type: 강의 또는 실습.
-        date: 강의 날짜 YYYY-MM-DD. 모르면 빈 문자열.
+        title: 페이지 제목. 일차 노트는 'N일차'(예: 89일차), 회고는 'N주차 회고', 프로젝트는 '최종 프로젝트 — 이름'처럼.
+        content: 마크다운 본문. #, ##, -, 1., ```코드```, **굵게**, [링크](url) 지원. 반말체(~임/~함)로 작성.
+        note_type: 강의 또는 실습. 회고·프로젝트처럼 해당 없으면 빈 문자열.
+        date: 날짜 YYYY-MM-DD. 모르면 빈 문자열.
+        category: 분류(DB 탭). 일차 노트/회고/프로젝트/면접/기타. 템플릿을 썼으면 템플릿의 분류. 비우면 제목으로 추측.
+        topic: 과목. 'N일차'면 자동이라 비워 둠. 프로젝트 페이지는 '단위 프로젝트' 또는 '최종 프로젝트'.
     """
+    # 같은 제목 페이지가 이미 있으면 새로 만들지 않음 (모델이 "응 저장해"에 한 번 더 저장하는 걸 막음).
+    # 방금 만든 페이지는 아직 캐시에 없을 수 있어서 이번 실행에서 만든 제목도 같이 봄
+    t = title.strip()
+    existing = _CREATED.get(t) or next(
+        (p["url"] for p in _load_cache()["pages"].values() if p["title"].strip() == t), None)
+    if existing:
+        return (f"'{t}' 페이지가 이미 있어서 새로 만들지 않음: {existing}\n"
+                "이미 저장된 거라고 사용자에게 알려줄 것. 정말 하나 더 필요하면 제목을 바꿔서 저장.")
     try:
-        r = create_note(title, content, note_type, date)
+        r = create_note(title, content, note_type, date, category, topic)
+        _CREATED[t] = r["url"] or "(방금 만듦)"
         return f"'{title}' 노트를 Notion에 저장함 ({r['blocks']}블록). {r['url']}"
     except NotionError as e:
         return str(e)
@@ -603,7 +680,136 @@ def mark_note_reviewed(title: str) -> str:
         return str(e)
 
 
+def _children(block_id: str) -> list[dict]:
+    """블록의 바로 아래 자식 블록 전부 (페이지네이션 처리)."""
+    out, cursor = [], None
+    while True:
+        q = "?page_size=100" + (f"&start_cursor={cursor}" if cursor else "")
+        res = _request("GET", f"/blocks/{block_id}/children{q}")
+        out += res["results"]
+        if not res.get("has_more"):
+            return out
+        cursor = res["next_cursor"]
+
+
+def _norm(text: str) -> str:
+    """'## 1. 개요 📌' 와 '개요' 를 같게 보려고 숫자·기호·공백·이모지를 지움."""
+    return re.sub(r"[\W\d_]+", "", text).lower()
+
+
+@tool
+def update_page_section(title: str, section: str, content: str, mode: str = "replace") -> str:
+    """이미 있는 Notion 페이지에서 '## 섹션' 하나의 내용만 바꾸거나 이어 씁니다. 페이지 전체를 다시 만들지 않음.
+    최종 프로젝트 페이지처럼 계속 갱신하는 페이지에 쓰세요. 고치기 전에 read_study_note로 현재 내용을 읽고,
+    어떤 섹션을 어떻게 바꿀지 사용자에게 보여주고 확인받은 뒤 쓰세요.
+
+    Args:
+        title: 페이지 제목. 예: 최종 프로젝트 — Compare Agent 2.1
+        section: 바꿀 섹션 제목 (번호·이모지 없이 일부만 써도 됨). 예: 기술 스택, 진행 기록. 없으면 페이지 끝에 새로 만듦.
+        content: 섹션 제목 아래에 들어갈 마크다운 (섹션 제목 줄 자체는 빼고). 표 | a | b |, 체크박스 - [ ] 지원.
+        mode: replace = 섹션 내용을 통째로 교체 (기술 스택·시스템 구조처럼 최신 상태만 필요한 칸),
+              append = 섹션 끝에 이어 쓰기 (진행 기록·트러블슈팅처럼 날마다 쌓이는 칸).
+    """
+    try:
+        found = _find_page(_load_cache(), title)
+        if not found or found[1]["title"].strip() != title.strip():
+            return f"'{title}' 페이지를 못 찾음. 제목을 정확히 확인하거나 sync_study_notes 후 다시 시도."
+        pid = found[0]
+        blocks = _children(pid)
+        new = _markdown_to_blocks(content)
+        if not new:
+            return "넣을 내용이 비어 있음."
+        heads = [(i, b) for i, b in enumerate(blocks) if b["type"] in ("heading_1", "heading_2", "heading_3")]
+        target = next(((i, b) for i, b in heads if _norm(section) and _norm(section) in _norm(_plain(b[b["type"]]["rich_text"]))), None)
+
+        if target is None:  # 없는 섹션 → 페이지 끝에 '## 섹션' + 내용
+            _append(pid, [_block("heading_2", section)] + new)
+            start_background_sync()
+            return f"'{section}' 섹션이 없어서 페이지 끝에 새로 만듦 ({len(new)}블록)."
+
+        idx, head = target
+        level = int(head["type"][-1])
+        # 섹션 끝 = 다음에 나오는 같은 단계 이상 제목 (## 섹션이면 다음 # 또는 ##)
+        end = next((i for i, b in heads if i > idx and int(b["type"][-1]) <= level), len(blocks))
+        body = blocks[idx + 1:end]
+        # 섹션 끝의 구분선(---)은 다음 섹션과의 경계라서 지우지도, 그 뒤에 붙이지도 않음
+        while body and body[-1]["type"] == "divider":
+            body = body[:-1]
+        if mode == "append":
+            anchor = body[-1]["id"] if body else head["id"]
+            removed = 0
+        else:
+            for b in body:
+                _request("DELETE", f"/blocks/{b['id']}")
+            anchor, removed = head["id"], len(body)
+        _append(pid, new, after=anchor)
+        start_background_sync()
+        return (f"'{found[1]['title']}' 페이지의 '{_plain(head[head['type']]['rich_text'])}' 섹션 "
+                + (f"교체함 (기존 {removed}블록 → 새 {len(new)}블록)." if mode != "append" else f"끝에 {len(new)}블록 추가함."))
+    except NotionError as e:
+        return str(e)
+
+
+def _append(page_id: str, blocks: list[dict], after: str | None = None) -> None:
+    """블록 추가. after 를 주면 그 블록 바로 뒤에 끼워 넣음. Notion은 한 번에 100개까지라 나눠서 보냄."""
+    for i in range(0, len(blocks), 100):
+        body = {"children": blocks[i:i + 100]}
+        if after:
+            body["after"] = after
+        res = _request("PATCH", f"/blocks/{page_id}/children", body)
+        if after and res.get("results"):
+            # 방금 넣은 최상위 블록 중 마지막 것 뒤에 다음 묶음을 이어 붙임
+            top = [r for r in res["results"] if r.get("parent", {}).get("type") != "block_id"]
+            after = (top or res["results"])[-1]["id"]
+
+
+@tool
+def get_note_template(name: str = "") -> str:
+    """저장해 둔 노트 정리 방식(템플릿)을 불러옵니다. 자료를 정리하기 전에 꼭 먼저 불러서 그 형식대로 정리하세요.
+    이름을 비우면 템플릿 목록을 보여줍니다.
+
+    Args:
+        name: 템플릿 이름. 예: 강의노트, 회의록, 주간회고. 빈 문자열이면 목록.
+    """
+    all_t = templates.load_templates()
+    t = all_t.get(name.strip())
+    if not t:
+        listing = "\n".join(f"- {x.name}: {x.description} (분류 {x.category}, 제목 {x.title_rule})"
+                            for x in all_t.values())
+        return ("" if not name else f"'{name}' 템플릿은 없음.\n") + "템플릿 목록:\n" + listing
+    return (f"[{t.name}] 분류={t.category}, 유형={t.note_type or '없음'}, 과목={t.topic or '자동/없음'}, "
+            f"제목 규칙={t.title_rule}\n"
+            f"저장할 때 save_study_note(category='{t.category}', note_type='{t.note_type}', topic='{t.topic}')로 저장할 것.\n\n"
+            + t.system_prompt())
+
+
+@tool
+def save_note_template(name: str, body: str, description: str = "", category: str = "",
+                       note_type: str = "", title_rule: str = "", topic: str = "") -> str:
+    """노트 정리 방식(템플릿)을 새로 만들거나 고쳐서 저장합니다. 다음부터 같은 방식으로 정리할 수 있게 됨.
+    사용자가 '앞으로 이렇게 정리해줘', '이 형식 기억해'라고 하면, 바꿀 내용을 보여주고 확인받은 뒤 쓰세요.
+    기존 템플릿을 고칠 땐 먼저 get_note_template으로 읽고, 바뀐 부분을 반영한 전체 본문을 넘기세요.
+
+    Args:
+        name: 템플릿 이름. 예: 회의록, 세미나정리.
+        body: 정리 지시문 전체 (구조, 섹션, 주의할 점). 말투 규칙은 자동으로 붙으니 안 써도 됨.
+        description: 언제 쓰는 템플릿인지 한 줄. 비우면 기존 값 유지.
+        category: Notion 분류. 일차 노트/회고/프로젝트/면접/기타. 비우면 기존 값 유지.
+        note_type: 강의/실습/빈 문자열.
+        title_rule: 제목 규칙. 'N일차', 'N주차 회고', '자유' 중 하나. 비우면 기존 값 유지.
+        topic: Notion 과목. N일차는 자동이라 비움. 프로젝트 페이지면 '최종 프로젝트' 등.
+    """
+    try:
+        t = templates.save_template(name, body, description, category, note_type, title_rule, topic)
+    except (ValueError, OSError) as e:
+        return f"템플릿 저장 실패: {e}"
+    return f"'{t.name}' 템플릿 저장함 (분류 {t.category}, 제목 {t.title_rule}). 파일: prompts/{t.name}.md"
+
+
 NOTION_TOOLS = [
+    update_page_section,
+    get_note_template,
+    save_note_template,
     get_curriculum,
     search_study_notes,
     read_study_note,
