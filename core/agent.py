@@ -13,10 +13,10 @@ from typing import Callable
 import openai
 from dotenv import load_dotenv
 
-import notion_tools
-import templates
-from paths import ENV_FILE
-from attachments import build_user_content
+import tools.notion as notion_tools
+from core.paths import ENV_FILE
+from study import templates
+from study.attachments import build_user_content
 from tools import TOOL_SCHEMAS, run_tool
 
 load_dotenv(ENV_FILE)  # .env 파일의 OPENAI_API_KEY 를 환경변수로 불러옴

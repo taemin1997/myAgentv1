@@ -11,7 +11,8 @@ from pathlib import Path
 def app_dir() -> Path:
     if getattr(sys, "frozen", False):  # PyInstaller로 만든 exe
         return Path(sys.executable).parent
-    return Path(__file__).parent
+    # 이 파일은 core/ 안에 있으니 한 단계 위(저장소 맨 위)가 기준. .env·data/·prompts/ 가 거기 있음
+    return Path(__file__).resolve().parent.parent
 
 
 APP_DIR = app_dir()

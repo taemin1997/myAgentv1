@@ -38,8 +38,14 @@
 
 ## 개발 환경 메모 (Windows)
 
-- uv + Python 3.12. 실행 `uv run app.py` 또는 `개인비서.bat`, 빌드 `build.bat` (→ `dist\`)
-- 사용자 폴더 경로에 한글이 있어서 `cmd /c build.bat`은 깨짐 → PowerShell에서 `& .\build.bat`. .bat 파일 내용은 ASCII만
+- uv + Python 3.12. 실행 `uv run app.py` 또는 `scripts\개인비서.bat`, 빌드 `scripts\build.bat` (→ `dist\`)
+- 사용자 폴더 경로에 한글이 있어서 `cmd /c build.bat`은 깨짐 → PowerShell에서 `& .\scripts\build.bat`. .bat 파일 내용은 ASCII만
+- 폴더 구조 (2026-11-14 정리): `core/`(agent·toolkit·paths) · `tools/`(life·github·notion/{client,blocks,cache,history,tools})
+  · `study/`(curriculum·templates·attachments) · `ui/`(ctk_app·note_cards) · `scripts/`(bat). 진입점 `app.py`·`main.py`만 맨 위.
+  import 는 저장소 맨 위 기준 절대 경로 (`from core.paths import …`, `import tools.notion as notion_tools`).
+  `core/paths.py`의 APP_DIR = 저장소 맨 위 (exe면 exe 폴더) → `.env`·`data/`·`prompts/`는 맨 위에 둠
+- 테스트할 때 Notion 함수를 가짜로 바꾸려면 **그 함수를 쓰는 모듈 쪽 이름**을 바꿔야 함
+  (예: `start_background_sync`는 cache·history·tools 세 모듈에 각각 import 돼 있음)
 - PowerShell 안에서 한글 섞인 파이썬 한 줄 실행은 따옴표가 잘 깨짐 → 스크립트 파일로 써서 `.venv\Scripts\python.exe -I 파일`
   (출력은 `sys.stdout.reconfigure(encoding="utf-8")`)
 - 다른 PC에서 처음: `git clone` → `uv sync` → `.env.example`을 `.env`로 복사해 키 입력 → 첫 실행 때 Notion 캐시 약 10분
@@ -68,7 +74,8 @@
 
 | # | 항목 | 상태 |
 |---|---|---|
-| 1 | GitHub 커밋으로 '내가 한 일' 채우기 | ✅ 2026-11-14 (`github_tools.py`) |
+| 0 | 폴더 정리 (core/tools/study/ui/scripts, Notion 모듈 5개로 분리) | ✅ 2026-11-14. 남은 것: 자동 테스트(`tests/`), 캐시 파일 동시 저장 잠금 |
+| 1 | GitHub 커밋으로 '내가 한 일' 채우기 | ✅ 2026-11-14 (`tools/github.py`) |
 | 2 | 갱신 백업 + 되돌리기 | ✅ 2026-11-14 (`undo_last_update`) |
 | 3 | 노트 의미 검색 (임베딩, 노트 RAG) | 후보 — 포트폴리오용으로도 좋음 |
 | 4 | 알아서 챙기기 (오늘 노트 없음, 복습 알림, 금요일 회고 초안 제안) | 후보 |
@@ -85,12 +92,13 @@
 **① 웹 화면으로 이식 (pywebview + HTML/CSS/JS)**
 - 기능은 지금과 똑같이 유지: 채팅·스트리밍, 첨부(📎 + 끌어다 놓기, 여러 개·폴더), 템플릿 드롭다운 + 정리 카드,
   새 대화 / Notion 토큰 / API 키 버튼, 상태줄(생각 중·Notion 동기화 진행률), ⚡ 상위 모델 전환 표시
-- 파이썬 로직(`agent.py`, `notion_tools.py`, `attachments.py`, `templates.py`, `github_tools.py`)은 그대로 쓰고 화면만 교체
+- 파이썬 로직(`core/`, `tools/`, `study/`)은 그대로 쓰고 화면만 교체 → 새 화면은 `ui/web/` 같은 곳에
 - 마크다운 렌더링(표·코드 블록·체크박스)은 웹에서 처리 → `pretty_markdown` 꼼수 없앰
 - 스트리밍: 파이썬 → JS로 조각 전달 (`window.evaluate_js` 또는 pywebview js_api 폴링). 0.1초 묶음 갱신 원칙 유지
 - 끌어다 놓기: 웹 drop 이벤트로 받은 파일 경로를 파이썬 `load_file`로 (pywebview에서 실제 경로 얻는 방법 확인 필요)
-- PyInstaller로 exe 빌드 유지 (pywebview는 Windows에서 Edge WebView2 사용). `build.bat` 수정
-- 기존 `app.py`(CustomTkinter)는 새 화면이 안정될 때까지 남겨 둠
+- PyInstaller로 exe 빌드 유지 (pywebview는 Windows에서 Edge WebView2 사용). `scripts/build.bat` 수정
+  (HTML·CSS·JS 파일을 exe에 넣으려면 `--add-data` 필요)
+- 기존 `ui/ctk_app.py`(CustomTkinter)는 새 화면이 안정될 때까지 남겨 둠. `app.py`가 어느 화면을 띄울지 고르게
 
 **② 캐릭터 칸 시스템**
 | 칸 | 맡는 도구 |
@@ -125,3 +133,4 @@
 - 2026-11-14: 저장소 이름만 줘도 찾기(`resolve_repo`: 내 저장소 → 포크면 원본 → 조직), 날짜 오류 메시지 분리
 - 2026-11-14: 채팅 답 스트리밍 (`agent._ask_model` stream=True, 도구 호출 조각 조립 / `app._poll_events`가 0.1초마다 말풍선 갱신)
 - 2026-11-14: 다음 작업(웹 화면 + 도구별 담당 캐릭터, 개인 캐릭터는 비공개 저장소) 계획 정리
+- 2026-11-14: 폴더 정리 — core/ tools/ study/ ui/ scripts/, notion_tools.py(950줄)를 tools/notion/ 5개 모듈로. 동작 변화 없음

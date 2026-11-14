@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
-from toolkit import tool
+from core.toolkit import tool
 
 API = "https://api.github.com"
 DEFAULT_REPO = "SKNETWORKS-FAMILY-AICAMP/SKN35-FINAL-4TEAM"  # 최종 프로젝트 저장소 (공개)

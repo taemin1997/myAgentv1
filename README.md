@@ -13,8 +13,8 @@ OpenAI API의 **function calling**으로 만든 데스크톱 개인 비서.
 
 | 방법 | 설명 |
 |---|---|
-| `dist\PersonalAssistant.exe` | 빌드한 exe. 파이썬 없이 실행 (`build.bat`로 생성) |
-| `개인비서.bat` | 파이썬(.venv)으로 바로 실행. 코드 고친 걸 빌드 없이 확인할 때 |
+| `dist\PersonalAssistant.exe` | 빌드한 exe. 파이썬 없이 실행 (`scripts\build.bat`로 생성) |
+| `scripts\개인비서.bat` 또는 `uv run app.py` | 파이썬(.venv)으로 바로 실행. 코드 고친 걸 빌드 없이 확인할 때 |
 | `uv run main.py` | 터미널 버전 |
 
 - 처음 실행 때 API 키가 없으면 입력창이 뜨고, 입력한 키는 `.env`에 저장됨
@@ -98,7 +98,7 @@ Notion이 초당 요청 수를 제한해서 더 빠르게는 안 됨. 이후엔 
 
 작업 순서는 `prompts/최종갱신.md`. 프로젝트 페이지의 `## 1. 개요` 같은 섹션 제목은 앱이 섹션을 찾는 기준이라 바꾸지 말 것.
 
-### 내 커밋 가져오기 (`github_tools.py`)
+### 내 커밋 가져오기 (`tools/github.py`)
 
 - 팀이 개인 브랜치에서 작업하니까 **모든 브랜치**에서 내 커밋을 찾고, 같은 커밋은 하나로 합침. 머지 커밋은 제외
 - 커밋 메시지 + 바뀐 파일(+추가/-삭제)을 근거로 요약. 커밋에 없는 내용은 안 씀
@@ -126,33 +126,45 @@ Notion이 초당 요청 수를 제한해서 더 빠르게는 안 됨. 이후엔 
 
 ## exe 만들기
 
-`build.bat` 더블클릭 → `dist\PersonalAssistant.exe` 생성 (파이썬 설치 없이 실행 가능)
+`scripts\build.bat` 더블클릭 → `dist\PersonalAssistant.exe` 생성 (파이썬 설치 없이 실행 가능)
 
 - `.env`·`data\`·`prompts\`는 **exe와 같은 폴더**에 생김. `build.bat`이 `.env`를 `dist\`로 복사해 줌
 - 코드를 고친 뒤에는 `build.bat`을 다시 실행해야 exe에 반영됨. exe가 켜져 있으면 먼저 닫을 것
+- `build.bat`은 `scripts\` 안에 있지만 저장소 맨 위로 이동해서 빌드함 (진입점은 맨 위 `app.py`)
 - 끌어다 놓기용 `tkinterdnd2`는 `--collect-all`로 같이 묶음
 - 백신이 서명 없는 exe를 의심할 수 있음 (직접 만든 파일이면 허용)
 
 ## 파일 구조
 
-| 파일 | 역할 |
-|---|---|
-| `app.py` | 창(GUI) - CustomTkinter 채팅 화면, 첨부·끌어다 놓기, 템플릿 드롭다운 |
-| `main.py` | 터미널 버전 |
-| `agent.py` | 에이전트 루프(`run_turn`), 시스템 프롬프트, 모델 선택(`pick_model`), 카드용 1회 정리(`summarize_pdfs`) |
-| `notion_tools.py` | Notion 도구: 검색·읽기·저장·복습 체크·섹션 갱신·템플릿 도구, 마크다운 → Notion 블록(표·체크박스 포함), 로컬 캐시 동기화 |
-| `templates.py` | 정리 방식(템플릿) 저장소. `prompts/*.md` 읽기·쓰기, 기본 템플릿 생성, 드롭다운 라벨 |
-| `prompts/` | 템플릿 파일 (강의노트·회의록·주간회고·프로젝트·면접·최종갱신 + 직접 추가한 것) |
-| `github_tools.py` | 팀 저장소 모든 브랜치에서 내 커밋 가져오기 (`get_my_commits`) |
-| `CLAUDE.md` | Claude로 이어서 작업할 때 읽는 규칙·결정 사항·고도화 현황 (계속 갱신) |
-| `attachments.py` | 첨부 파일 읽기 (PDF·docx·pptx·HTML·텍스트·이미지), 멀티모달 메시지 만들기, 예전 첨부 비우기 |
-| `note_cards.py` | 정리 카드 (제목·날짜·유형·정리본 편집·저장) |
-| `curriculum.py` | 커리큘럼 1~120일차(날짜·과목) + 프로젝트 요약. 날짜·과목 자동 입력에 씀 |
-| `tools.py` | 생활 도구(`@tool` 함수) + 전체 도구 스키마 |
-| `toolkit.py` | `@tool` 데코레이터 (타입 힌트·docstring → 도구 스키마) |
-| `paths.py` | `.env`·`data/` 위치 (exe일 때는 exe 옆) |
-| `개인비서.bat` / `build.bat` | 더블클릭 실행 / exe 빌드 |
-| `data/`, `.env` | 캐시·메모·할 일, API 키 (git 제외) |
+```
+myAgent/
+├─ app.py, main.py      실행 진입점 (창 / 터미널)
+├─ core/                에이전트 두뇌
+│   ├─ agent.py         루프(run_turn)·스트리밍·시스템 프롬프트·모델 선택(pick_model)·카드용 정리(summarize_pdfs)
+│   ├─ toolkit.py       @tool 데코레이터 (타입 힌트·docstring → 도구 스키마)
+│   └─ paths.py         .env·data/·prompts/ 위치 (exe일 때는 exe 옆, 아니면 저장소 맨 위)
+├─ tools/               모델이 쓰는 도구 20개 (나중에 캐릭터 칸과 대응)
+│   ├─ __init__.py      도구 목록(ALL_TOOLS)·스키마·run_tool
+│   ├─ life.py          시간·계산·메모·할 일·날씨
+│   ├─ github.py        팀 저장소의 내 커밋 (get_my_commits, resolve_repo)
+│   └─ notion/          Notion 공부 노트
+│       ├─ client.py    요청·재시도·오류 메시지, DB 속성 이름
+│       ├─ blocks.py    블록 ↔ 텍스트/마크다운(표·체크박스), 블록 끼워 넣기
+│       ├─ cache.py     로컬 캐시 동기화 (data/notion_cache.json)
+│       ├─ history.py   수정 기록·되돌리기 (undo_last_update)
+│       └─ tools.py     검색·읽기·저장·섹션 갱신·템플릿·커리큘럼 도구
+├─ study/               공부 도메인
+│   ├─ curriculum.py    커리큘럼 1~120일차 + 프로젝트 요약
+│   ├─ templates.py     정리 방식 템플릿 (prompts/*.md 읽기·쓰기, 드롭다운 라벨)
+│   └─ attachments.py   첨부 파일 읽기 (PDF·docx·pptx·HTML·텍스트·이미지)
+├─ ui/                  화면
+│   ├─ ctk_app.py       CustomTkinter 채팅 창 (첨부·끌어다 놓기·스트리밍)
+│   └─ note_cards.py    정리 카드
+├─ prompts/             템플릿 파일 (강의노트·회의록·주간회고·프로젝트·면접·최종갱신)
+├─ scripts/             build.bat (exe 빌드), 개인비서.bat (더블클릭 실행)
+├─ CLAUDE.md            Claude로 이어서 작업할 때의 규칙·결정 사항·고도화 현황 (계속 갱신)
+└─ data/, .env          캐시·메모·할 일·수정 기록, API 키 (git 제외)
+```
 
 ## 동작 원리
 
@@ -172,7 +184,8 @@ run_turn()이 도구 실행 → 결과를 role="tool" 메시지로 다시 전달
 
 ## 도구 추가하는 법
 
-`tools.py`(또는 `notion_tools.py`)에 함수를 만들고 `ALL_TOOLS`(`NOTION_TOOLS`)에 넣으면 끝.
+`tools/` 안의 알맞은 모듈(`life.py`, `github.py`, `notion/tools.py`)에 함수를 만들고 `tools/__init__.py`의 `ALL_TOOLS`
+(Notion이면 `notion/tools.py`의 `NOTION_TOOLS`)에 넣으면 끝.
 docstring이 그대로 모델에게 가는 설명서라서 **언제 쓰는 도구인지** 분명히 적을 것.
 인자 타입은 `str`, `int`, `float`, `bool` 지원.
 
@@ -188,4 +201,4 @@ def roll_dice(sides: int = 6) -> str:
     return str(random.randint(1, sides))
 ```
 
-비서 성격·규칙은 `agent.py`의 `SYSTEM_PROMPT`.
+비서 성격·규칙은 `core/agent.py`의 `SYSTEM_PROMPT`.

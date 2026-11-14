@@ -1,10 +1,4 @@
-"""개인 비서 에이전트가 쓸 수 있는 도구 모음.
-
-@tool 을 붙인 함수는 함수 시그니처(타입 힌트)와 docstring을 읽어서
-모델에게 보낼 도구 설명(JSON 스키마)을 자동으로 만듭니다.
-그래서 docstring의 설명과 Args 항목을 잘 써 두는 것이 중요합니다.
-새 도구를 추가하려면 함수를 하나 만들고 ALL_TOOLS 에 넣으면 됩니다.
-"""
+"""생활 도구: 시간, 계산, 메모, 할 일, 날씨. (Notion·GitHub와 상관없는 기본 비서 기능)"""
 
 import ast
 import json
@@ -15,10 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from github_tools import GITHUB_TOOLS
-from notion_tools import NOTION_TOOLS
-from paths import DATA_DIR
-from toolkit import tool
+from core.paths import DATA_DIR
+from core.toolkit import tool
 
 NOTES_FILE = DATA_DIR / "notes.json"
 TODOS_FILE = DATA_DIR / "todos.json"
@@ -199,34 +191,3 @@ def get_weather(city: str) -> str:
         )
     except Exception as e:
         return f"날씨 조회 실패: {e}"
-
-
-ALL_TOOLS = [
-    get_current_time,
-    calculate,
-    save_note,
-    search_notes,
-    add_todo,
-    list_todos,
-    complete_todo,
-    get_weather,
-    *NOTION_TOOLS,  # notion_tools.py 의 공부 비서 도구들
-    *GITHUB_TOOLS,  # github_tools.py: 팀 저장소의 내 커밋
-]
-
-# 모델에게 보낼 도구 목록과, 이름으로 실제 함수를 찾는 표
-TOOL_SCHEMAS = [f.schema for f in ALL_TOOLS]
-TOOLS_BY_NAME = {f.__name__: f for f in ALL_TOOLS}
-
-
-def run_tool(name: str, arguments_json: str) -> str:
-    """모델이 요청한 도구를 실행하고 결과를 문자열로 돌려준다.
-    에러가 나도 프로그램이 죽지 않고, 에러 내용을 모델에게 알려준다."""
-    fn = TOOLS_BY_NAME.get(name)
-    if fn is None:
-        return f"알 수 없는 도구: {name}"
-    try:
-        args = json.loads(arguments_json or "{}")
-        return str(fn(**args))
-    except Exception as e:
-        return f"도구 실행 오류 ({type(e).__name__}): {e}"

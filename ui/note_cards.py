@@ -17,9 +17,9 @@ from typing import Callable
 
 import customtkinter as ctk
 
-import notion_tools
-import templates
-from agent import friendly_error, summarize_pdfs
+import tools.notion as notion_tools
+from core.agent import friendly_error, summarize_pdfs
+from study import templates
 
 
 class NoteCard(ctk.CTkFrame):

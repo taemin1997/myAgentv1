@@ -20,7 +20,7 @@
 
 from dataclasses import dataclass
 
-from paths import APP_DIR
+from core.paths import APP_DIR
 
 PROMPT_DIR = APP_DIR / "prompts"
 CATEGORIES = ("일차 노트", "회고", "프로젝트", "면접", "기타")  # Notion DB '분류' 선택지와 같아야 함

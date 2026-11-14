@@ -9,7 +9,7 @@ import sys
 
 import openai
 
-from agent import MODEL, friendly_error, new_conversation, run_turn
+from core.agent import MODEL, friendly_error, new_conversation, run_turn
 
 
 def main() -> None:

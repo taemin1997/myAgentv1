@@ -1,6 +1,7 @@
 @echo off
 rem Builds dist\PersonalAssistant.exe. Run again after changing the code.
-cd /d "%~dp0"
+rem This file lives in scripts\, so move to the repo root first.
+cd /d "%~dp0.."
 uv sync --quiet
 uv run pyinstaller app.py --name PersonalAssistant --onefile --windowed --collect-data customtkinter --collect-all tkinterdnd2 --noconfirm --clean
 rem The exe reads .env from its own folder, so copy the key next to it.
