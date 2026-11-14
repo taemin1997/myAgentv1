@@ -17,6 +17,7 @@
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
@@ -59,11 +60,36 @@ def _day_range(date: str, days: int) -> tuple[str, str]:
     return fmt(start_day), fmt(end_day)
 
 
+def resolve_repo(repo: str, author: str) -> str:
+    """'myAgentv1'처럼 이름만 오면 'owner/name'으로 바꿈.
+    모델이 소유자를 빼고 이름만 넘기는 경우가 있어서 (실제로 그랬음):
+      1) 내 저장소 목록에서 같은 이름(대소문자 무시) 찾기
+      2) 없으면 최종 프로젝트 조직(SKNETWORKS-FAMILY-AICAMP)의 저장소로 보고 확인
+    URL(https://github.com/owner/name)로 와도 owner/name만 뽑음."""
+    repo = repo.strip().removesuffix(".git").rstrip("/")
+    if "github.com/" in repo:
+        repo = "/".join(repo.split("github.com/", 1)[1].split("/")[:2])
+    if "/" in repo:
+        return repo
+    for r in _get(f"/users/{author}/repos?per_page=100&sort=pushed"):
+        if r["name"].lower() == repo.lower():
+            if r.get("fork"):
+                # 팀 저장소를 포크해 둔 경우: 실제 작업(브랜치·커밋)은 원본에 있어서 원본을 씀
+                return _get(f"/repos/{r['full_name']}").get("parent", {}).get("full_name", r["full_name"])
+            return r["full_name"]
+    org = DEFAULT_REPO.split("/")[0]
+    try:
+        return _get(f"/repos/{org}/{urllib.parse.quote(repo)}")["full_name"]
+    except GitHubError:
+        raise GitHubError(f"'{repo}' 저장소를 못 찾음 ({author}의 공개 저장소와 {org} 조직에서 찾아봄). "
+                          "이름을 확인하거나 'owner/이름' 형식으로 알려줘")
+
+
 def my_commits(date: str = "", days: int = 1, repo: str = "", author: str = "") -> list[dict]:
     """모든 브랜치에서 author의 커밋을 모아 날짜순으로. 머지 커밋은 뺌.
     반환: [{"sha","time"(KST),"branches","message","files":[(파일, +추가, -삭제)], "url"}]"""
-    repo = repo or os.getenv("GITHUB_REPO", DEFAULT_REPO)
     author = author or os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR)
+    repo = resolve_repo(repo or os.getenv("GITHUB_REPO", DEFAULT_REPO), author)
     date = date or datetime.now(KST).strftime("%Y-%m-%d")
     since, until = _day_range(date, days)
 
@@ -97,18 +123,25 @@ def get_my_commits(date: str = "", days: int = 1, repo: str = "", author: str = 
     Args:
         date: 기준 날짜 YYYY-MM-DD (한국 시간). 빈 문자열이면 오늘.
         days: 며칠치를 볼지. 1이면 그날 하루, 3이면 그날 포함 최근 3일 (주말 작업까지 볼 때).
-        repo: 'owner/name'. 빈 문자열이면 최종 프로젝트 저장소.
+        repo: 저장소. 'myAgentv1'처럼 이름만 써도 됨 ('owner/name'이나 GitHub 주소도 됨). 빈 문자열이면 최종 프로젝트 저장소.
         author: GitHub 아이디. 빈 문자열이면 taemin1997.
     """
+    author = author or os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR)
+    if date:  # 날짜 오류를 다른 오류(예: 한글 저장소 이름)와 헷갈리지 않게 먼저 따로 확인
+        try:
+            datetime.strptime(date, "%Y-%m-%d")
+        except ValueError:
+            return f"날짜 형식이 이상함: {date} (YYYY-MM-DD)"
     try:
-        commits = my_commits(date, days, repo, author)
+        # 저장소 이름을 먼저 owner/name으로 확정 (요청 한도 아끼려고 한 번만)
+        where = resolve_repo(repo or os.getenv("GITHUB_REPO", DEFAULT_REPO), author)
+        commits = my_commits(date, days, where, author)
     except GitHubError as e:
         return str(e)
-    except ValueError:
-        return f"날짜 형식이 이상함: {date} (YYYY-MM-DD)"
-    label = f"{date or '오늘'}" + (f" 포함 최근 {days}일" if days > 1 else "")
+    label = f"{where} · {date or '오늘'}" + (f" 포함 최근 {days}일" if days > 1 else "")
     if not commits:
-        return f"{label} 내 커밋 없음 (모든 브랜치 확인함)."
+        return (f"{label} 내 커밋 없음 (모든 브랜치 확인함). "
+                "로컬에서만 커밋하고 push 안 한 건 안 보임. 다른 저장소 작업이면 repo를 지정해서 다시 볼 것.")
     lines = [f"{label} 내 커밋 {len(commits)}개 (모든 브랜치, 머지 커밋 제외):"]
     for c in commits:
         lines.append(f"- {c['time']} [{', '.join(c['branches'])}] {c['message'].splitlines()[0]}  ({c['sha']}, {c['url']})")
