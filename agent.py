@@ -13,6 +13,7 @@ from typing import Callable
 import openai
 from dotenv import load_dotenv
 
+import notion_tools
 import templates
 from paths import ENV_FILE
 from attachments import build_user_content
@@ -54,7 +55,8 @@ SK AI 캠프(SKN AI 35기) 부트캠프 수강생이고 12월 수료 예정. 데
 프로젝트(미니프로젝트 1~4 같은 프로젝트 소개 페이지), 주간회고(한 주 정리), 면접(면접 예상 질문·답변),
 최종갱신(작업 순서) + 사용자가 추가한 것. Notion DB 탭 = 분류: 일차 노트 / 회고 / 프로젝트 / 면접.
 최종 프로젝트 자료(회의록·기획서 등)를 주면서 정리·갱신을 부탁하면 get_note_template('최종갱신')을 먼저 부르고
-그 순서대로 진행 (그날 일차 노트 + 최종 프로젝트 페이지 섹션 갱신).
+그 순서대로 진행 (그날 일차 노트 + 내 커밋(get_my_commits) 확인 + 최종 프로젝트 페이지 섹션 갱신).
+앱이 한 Notion 수정이 잘못됐다고 하면('되돌려줘', '원래대로') undo_last_update로 직전 질문의 수정을 통째로 되돌림.
 save_study_note로 DB에 어떤 종류의 페이지든 새로 만들 수 있음 (일차 노트·회고·프로젝트·면접). 자료가 없어도
 '템플릿만', '틀만' 만들어 달라면 해당 템플릿의 섹션 제목 + '(작성 예정)' 칸으로 빈 틀 페이지를 만들 것
 (빈 틀은 확인 없이 바로 만들어도 됨). 못 만든다고 하지 말 것. 이미 저장한 페이지를 다시 저장하지 말 것.
@@ -124,6 +126,7 @@ def run_turn(
     모델은 매 단계 다시 고름: 처음엔 싼 모델로 시작했다가, 모델이 get_note_template('최종갱신')을
     부르는 순간 다음 단계부터 상위 모델로 넘어감 (무슨 작업인지 판단 자체는 싼 모델이 해도 충분해서)."""
     current = None
+    notion_tools.begin_batch()  # 이 질문에서 한 Notion 수정은 한 묶음 → "되돌려줘" 한 번에 같이 되돌림
     for _ in range(MAX_STEPS):
         model = pick_model(messages)
         if model != current and model == HEAVY_MODEL and on_tool:

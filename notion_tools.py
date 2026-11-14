@@ -550,7 +550,7 @@ def create_note(title: str, content: str, note_type: str = "강의", date: str =
     for i in range(100, len(blocks), 100):
         _request("PATCH", f"/blocks/{page['id']}/children", {"children": blocks[i:i + 100]})
     start_background_sync()  # 방금 저장한 노트도 곧 검색되게 (기다리지 않음)
-    return {"url": page.get("url", ""), "blocks": len(blocks)}
+    return {"url": page.get("url", ""), "blocks": len(blocks), "id": page["id"]}
 
 
 def suggest_next_days(count: int) -> list[tuple[str, str]]:
@@ -654,6 +654,7 @@ def save_study_note(title: str, content: str, note_type: str = "강의", date: s
     try:
         r = create_note(title, content, note_type, date, category, topic)
         _CREATED[t] = r["url"] or "(방금 만듦)"
+        _record({"kind": "create", "page_id": r["id"], "page_title": t})  # 되돌리기 때 휴지통으로
         return f"'{title}' 노트를 Notion에 저장함 ({r['blocks']}블록). {r['url']}"
     except NotionError as e:
         return str(e)
@@ -722,8 +723,11 @@ def update_page_section(title: str, section: str, content: str, mode: str = "rep
         heads = [(i, b) for i, b in enumerate(blocks) if b["type"] in ("heading_1", "heading_2", "heading_3")]
         target = next(((i, b) for i, b in heads if _norm(section) and _norm(section) in _norm(_plain(b[b["type"]]["rich_text"]))), None)
 
+        page_title = found[1]["title"]
         if target is None:  # 없는 섹션 → 페이지 끝에 '## 섹션' + 내용
-            _append(pid, [_block("heading_2", section)] + new)
+            new_ids = _append(pid, [_block("heading_2", section)] + new)
+            _record({"kind": "section", "page_id": pid, "page_title": page_title, "section": section,
+                     "mode": "new", "old_blocks": [], "anchor": None, "new_ids": new_ids})
             start_background_sync()
             return f"'{section}' 섹션이 없어서 페이지 끝에 새로 만듦 ({len(new)}블록)."
 
@@ -735,32 +739,156 @@ def update_page_section(title: str, section: str, content: str, mode: str = "rep
         # 섹션 끝의 구분선(---)은 다음 섹션과의 경계라서 지우지도, 그 뒤에 붙이지도 않음
         while body and body[-1]["type"] == "divider":
             body = body[:-1]
+        head_text = _plain(head[head["type"]]["rich_text"])
         if mode == "append":
-            anchor = body[-1]["id"] if body else head["id"]
-            removed = 0
+            anchor, old = (body[-1]["id"] if body else head["id"]), []
         else:
+            # 지우기 전에 원래 블록을 (하위 블록까지) 저장 → undo_last_update 로 되살릴 수 있게
+            old = [s for b in body if (s := _serialize(b))]
             for b in body:
                 _request("DELETE", f"/blocks/{b['id']}")
-            anchor, removed = head["id"], len(body)
-        _append(pid, new, after=anchor)
+            anchor = head["id"]
+        new_ids = _append(pid, new, after=anchor)
+        _record({"kind": "section", "page_id": pid, "page_title": page_title, "section": head_text,
+                 "mode": "append" if mode == "append" else "replace",
+                 "old_blocks": old, "anchor": head["id"], "new_ids": new_ids})
         start_background_sync()
-        return (f"'{found[1]['title']}' 페이지의 '{_plain(head[head['type']]['rich_text'])}' 섹션 "
-                + (f"교체함 (기존 {removed}블록 → 새 {len(new)}블록)." if mode != "append" else f"끝에 {len(new)}블록 추가함."))
+        return (f"'{page_title}' 페이지의 '{head_text}' 섹션 "
+                + (f"교체함 (기존 {len(body)}블록 → 새 {len(new)}블록, 원래 내용은 백업함)."
+                   if mode != "append" else f"끝에 {len(new)}블록 추가함."))
     except NotionError as e:
         return str(e)
 
 
-def _append(page_id: str, blocks: list[dict], after: str | None = None) -> None:
-    """블록 추가. after 를 주면 그 블록 바로 뒤에 끼워 넣음. Notion은 한 번에 100개까지라 나눠서 보냄."""
+def _append(page_id: str, blocks: list[dict], after: str | None = None) -> list[str]:
+    """블록 추가. after 를 주면 그 블록 바로 뒤에 끼워 넣음. Notion은 한 번에 100개까지라 나눠서 보냄.
+    새로 생긴 최상위 블록 id 목록을 돌려줌 (되돌리기 때 이것만 지우면 됨)."""
+    # 주의: Notion 응답의 results 에는 새 블록만 오는 게 아니라 (after 로 끼워 넣으면) 그 뒤 블록들까지 섞여 옴.
+    # 그걸 새 블록으로 기록하면 되돌리기 때 멀쩡한 뒤쪽 섹션까지 지워짐 (테스트에서 실제로 발생).
+    # → 넣기 전·후의 자식 블록 id 목록을 비교해서 '정말 새로 생긴 것'만 골라냄.
+    ids = []
     for i in range(0, len(blocks), 100):
-        body = {"children": blocks[i:i + 100]}
+        chunk = blocks[i:i + 100]
+        before = {b["id"] for b in _children(page_id)}
+        body = {"children": chunk}
         if after:
             body["after"] = after
-        res = _request("PATCH", f"/blocks/{page_id}/children", body)
-        if after and res.get("results"):
-            # 방금 넣은 최상위 블록 중 마지막 것 뒤에 다음 묶음을 이어 붙임
-            top = [r for r in res["results"] if r.get("parent", {}).get("type") != "block_id"]
-            after = (top or res["results"])[-1]["id"]
+        _request("PATCH", f"/blocks/{page_id}/children", body)
+        got = [b["id"] for b in _children(page_id) if b["id"] not in before]
+        if len(got) != len(chunk):
+            raise NotionError(f"블록 추가 결과가 이상함 (넣은 {len(chunk)}개, 새로 보인 {len(got)}개)")
+        ids += got
+        if after:
+            after = got[-1]  # 다음 묶음은 방금 넣은 마지막 블록 뒤에 이어 붙임
+    return ids
+
+
+# ================================================================ 백업 & 되돌리기
+# 앱이 Notion을 고칠 때마다 '무엇을 지우고 무엇을 넣었는지'를 data/update_history.json 에 남김.
+# 같은 질문(run_turn 한 번) 안에서 한 수정은 같은 batch 로 묶어서, "방금 갱신 되돌려줘" 한 번에 다 되돌림.
+HISTORY_FILE = DATA_DIR / "update_history.json"
+HISTORY_KEEP = 40  # 오래된 기록은 버림
+CURRENT_BATCH = {"id": "manual"}  # agent.run_turn 이 질문마다 새 id로 바꿈
+
+
+def begin_batch() -> None:
+    CURRENT_BATCH["id"] = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+
+
+def _history() -> list[dict]:
+    if HISTORY_FILE.exists():
+        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+    return []
+
+
+def _record(entry: dict) -> None:
+    hist = _history()
+    hist.append({"batch": CURRENT_BATCH["id"], "time": datetime.now().strftime("%m/%d %H:%M"), **entry})
+    DATA_DIR.mkdir(exist_ok=True)
+    HISTORY_FILE.write_text(json.dumps(hist[-HISTORY_KEEP:], ensure_ascii=False), encoding="utf-8")
+
+
+def _clean_rich(items: list) -> list:
+    """GET 으로 받은 rich_text → 다시 만들 때 쓸 수 있는 형태 (plain_text·href 같은 읽기 전용 값 빼기).
+    다시 만들 수 없는 멘션(링크 미리보기 등)은 글자로 바꿈."""
+    out = []
+    for r in items:
+        if r.get("type") == "mention" and r["mention"].get("type") not in ("page", "database", "date", "user"):
+            r = {"type": "text", "text": {"content": r.get("plain_text", "")}, "annotations": r.get("annotations", {})}
+        out.append({k: v for k, v in r.items() if k not in ("plain_text", "href")})
+    return out
+
+
+_NOT_RESTORABLE = {"child_page", "child_database", "unsupported", "link_preview", "synced_block", "template"}
+
+
+def _serialize(block: dict, depth: int = 0) -> dict | None:
+    """Notion 블록(GET 결과) → 같은 블록을 다시 만드는 요청 형태. 하위 블록(토글 안, 표의 행)까지 담음.
+    Notion은 한 번에 2단계 아래까지만 만들 수 있어서 depth 2에서 멈춤."""
+    t = block["type"]
+    if t in _NOT_RESTORABLE:
+        return None
+    data = dict(block[t])
+    if t in ("image", "file", "pdf", "video", "audio") and data.get("type") == "file":
+        # 업로드 파일 주소는 1시간 뒤 만료돼서 다시 못 만듦 → 자리 표시만 남김
+        return _block("paragraph", f"(되돌리기로 복구 못 한 첨부 파일: {t})")
+    if "rich_text" in data:
+        data["rich_text"] = _clean_rich(data["rich_text"])
+    if "caption" in data:
+        data["caption"] = _clean_rich(data["caption"])
+    if t == "table_row":
+        data["cells"] = [_clean_rich(c) for c in data["cells"]]
+    if block.get("has_children") and depth < 2:
+        kids = [s for c in _children(block["id"]) if (s := _serialize(c, depth + 1))]
+        if kids:
+            data["children"] = kids
+    return {"object": "block", "type": t, t: data}
+
+
+@tool
+def undo_last_update() -> str:
+    """앱이 마지막으로 한 Notion 수정(가장 최근 질문에서 한 섹션 갱신·페이지 생성 전부)을 되돌립니다.
+    사용자가 '방금 갱신 되돌려줘', '원래대로 해줘', '잘못 고쳤어'라고 하면 쓰세요.
+    교체한 섹션은 원래 내용으로 복구하고, 이어 쓴 줄은 지우고, 새로 만든 페이지는 휴지통으로 보냄.
+    한 번 더 부르면 그 전 수정을 되돌림.
+    """
+    hist = _history()
+    if not hist:
+        return "되돌릴 수정 기록이 없음."
+    batch = hist[-1]["batch"]
+    todo = [e for e in hist if e["batch"] == batch]
+    done, problems = [], []
+    try:
+        for e in reversed(todo):  # 나중에 한 것부터 거꾸로
+            if e["kind"] == "create":
+                _request("PATCH", f"/pages/{e['page_id']}", {"in_trash": True})
+                _CREATED.pop(e["page_title"], None)
+                done.append(f"새 페이지 '{e['page_title']}' 휴지통으로 보냄 (Notion 휴지통에서 복구 가능)")
+                continue
+            missing = 0
+            for bid in e["new_ids"]:
+                try:
+                    _request("DELETE", f"/blocks/{bid}")
+                except NotionError:
+                    missing += 1  # 사용자가 이미 지웠거나 옮긴 블록
+            if e["old_blocks"]:
+                try:
+                    _append(e["page_id"], e["old_blocks"], after=e["anchor"])
+                except NotionError as err:  # 섹션 제목이 지워졌으면 끝에라도 붙임
+                    _append(e["page_id"], [_block("heading_2", e["section"])] + e["old_blocks"])
+                    problems.append(f"'{e['section']}' 제목을 못 찾아 페이지 끝에 복구함 ({err})")
+            what = {"replace": "원래 내용으로 복구", "append": "추가한 줄 지움", "new": "새로 만든 섹션 지움"}[e["mode"]]
+            done.append(f"'{e['page_title']}' › {e['section']}: {what}"
+                        + (f" (이미 없어진 블록 {missing}개는 건너뜀)" if missing else ""))
+    except NotionError as err:
+        problems.append(str(err))
+    # 되돌린 기록은 지움 (다음 되돌리기는 그 전 수정)
+    rest = [e for e in hist if e["batch"] != batch]
+    HISTORY_FILE.write_text(json.dumps(rest, ensure_ascii=False), encoding="utf-8")
+    start_background_sync()
+    when = todo[0]["time"]
+    return (f"{when}에 한 수정 {len(todo)}건을 되돌림:\n" + "\n".join(f"- {d}" for d in done)
+            + ("\n문제:\n" + "\n".join(f"- {p}" for p in problems) if problems else ""))
 
 
 @tool
@@ -808,6 +936,7 @@ def save_note_template(name: str, body: str, description: str = "", category: st
 
 NOTION_TOOLS = [
     update_page_section,
+    undo_last_update,
     get_note_template,
     save_note_template,
     get_curriculum,

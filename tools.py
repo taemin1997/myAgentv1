@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from github_tools import GITHUB_TOOLS
 from notion_tools import NOTION_TOOLS
 from paths import DATA_DIR
 from toolkit import tool
@@ -210,6 +211,7 @@ ALL_TOOLS = [
     complete_todo,
     get_weather,
     *NOTION_TOOLS,  # notion_tools.py 의 공부 비서 도구들
+    *GITHUB_TOOLS,  # github_tools.py: 팀 저장소의 내 커밋
 ]
 
 # 모델에게 보낼 도구 목록과, 이름으로 실제 함수를 찾는 표
