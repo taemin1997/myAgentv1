@@ -114,14 +114,57 @@ def pick_model(messages: list) -> str:
     return HEAVY_MODEL if heavy else MODEL
 
 
+def _ask_model(client: openai.OpenAI, model: str, messages: list,
+               on_text: Callable[[str, str], None] | None) -> tuple[str, str, list[dict]]:
+    """모델 한 번 호출 → (본문, 거절 문구, 도구 호출 목록).
+
+    on_text 가 있으면 스트리밍으로 받음: 글자가 생기는 대로 on_text("delta", 조각)을 부르고,
+    이 단계 글이 끝나면 on_text("end", 전체 글). 화면은 그걸 받아서 말풍선에 바로바로 이어 씀.
+    스트리밍에선 도구 호출도 조각(이름·인자 JSON 일부)으로 나눠 오니까 index 별로 이어 붙여서 완성함.
+    on_text 가 없으면(터미널 버전·테스트) 예전처럼 한 번에 받음."""
+    if on_text is None:
+        msg = client.chat.completions.create(model=model, messages=messages, tools=TOOL_SCHEMAS).choices[0].message
+        calls = [{"id": c.id, "type": "function",
+                  "function": {"name": c.function.name, "arguments": c.function.arguments}}
+                 for c in msg.tool_calls or []]
+        return msg.content or "", msg.refusal or "", calls
+
+    text, refusal, calls = [], [], {}
+    stream = client.chat.completions.create(model=model, messages=messages, tools=TOOL_SCHEMAS, stream=True)
+    for chunk in stream:
+        if not chunk.choices:  # 마지막 사용량 조각 등은 choices 가 비어 있음
+            continue
+        delta = chunk.choices[0].delta
+        if delta.content:
+            text.append(delta.content)
+            on_text("delta", delta.content)
+        if getattr(delta, "refusal", None):
+            refusal.append(delta.refusal)
+        for tc in delta.tool_calls or []:
+            # 첫 조각에 id·이름이 오고, 인자 JSON 은 여러 조각으로 나눠서 옴
+            c = calls.setdefault(tc.index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+            if tc.id:
+                c["id"] = tc.id
+            if tc.function and tc.function.name:
+                c["function"]["name"] += tc.function.name
+            if tc.function and tc.function.arguments:
+                c["function"]["arguments"] += tc.function.arguments
+    if text:
+        on_text("end", "".join(text))
+    return "".join(text), "".join(refusal), [calls[i] for i in sorted(calls)]
+
+
 def run_turn(
     client: openai.OpenAI,
     messages: list,
     on_tool: Callable[[str, str], None] | None = None,
+    on_text: Callable[[str, str], None] | None = None,
 ) -> str:
     """도구 호출이 끝날 때까지 모델과 주고받고 최종 답변을 돌려준다.
     messages 는 이 과정에서 계속 늘어난다 (= 대화 기록).
     on_tool(이름, 인자JSON) 은 도구를 실행할 때마다 불린다 (화면 표시용).
+    on_text(종류, 글) 를 주면 답을 스트리밍으로 받음 (_ask_model 참고). 도구를 쓰기 전에 모델이
+    "확인해볼게" 같은 말을 먼저 하면 그것도 따로 흘러나옴.
 
     모델은 매 단계 다시 고름: 처음엔 싼 모델로 시작했다가, 모델이 get_note_template('최종갱신')을
     부르는 순간 다음 단계부터 상위 모델로 넘어감 (무슨 작업인지 판단 자체는 싼 모델이 해도 충분해서)."""
@@ -132,35 +175,23 @@ def run_turn(
         if model != current and model == HEAVY_MODEL and on_tool:
             on_tool("⚡ 갱신 작업이라 상위 모델로 전환", model)
         current = model
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-            tools=TOOL_SCHEMAS,
-        )
-        msg = response.choices[0].message
+        content, refusal, calls = _ask_model(client, model, messages, on_text)
 
         # 모델의 응답(도구 호출 요청 포함)을 기록에 남김
-        assistant = {"role": "assistant", "content": msg.content}
-        if msg.tool_calls:
-            assistant["tool_calls"] = [
-                {
-                    "id": call.id,
-                    "type": "function",
-                    "function": {"name": call.function.name, "arguments": call.function.arguments},
-                }
-                for call in msg.tool_calls
-            ]
+        assistant = {"role": "assistant", "content": content or None}
+        if calls:
+            assistant["tool_calls"] = calls
         messages.append(assistant)
 
-        if not msg.tool_calls:  # 도구를 더 안 쓰면 최종 답변
-            return msg.content or msg.refusal or ""
+        if not calls:  # 도구를 더 안 쓰면 최종 답변
+            return content or refusal or ""
 
         # 요청받은 도구를 모두 실행하고 결과를 기록에 추가
-        for call in msg.tool_calls:
+        for call in calls:
+            name, args = call["function"]["name"], call["function"]["arguments"]
             if on_tool:
-                on_tool(call.function.name, call.function.arguments)
-            result = run_tool(call.function.name, call.function.arguments)
-            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+                on_tool(name, args)
+            messages.append({"role": "tool", "tool_call_id": call["id"], "content": run_tool(name, args)})
 
     return "(도구 호출이 너무 많아 중단했어요. 질문을 나눠서 해 주세요.)"
 

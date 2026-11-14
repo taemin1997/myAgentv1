@@ -78,6 +78,11 @@ class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.events: queue.Queue = queue.Queue()  # 작업 스레드 → 화면 전달용
         self.busy = False
         self.attachments: list = []  # 다음 메시지에 같이 보낼 파일들 (PDF·문서·이미지)
+        # 스트리밍 상태: 지금 글자가 채워지는 중인 말풍선과 그 안의 글
+        self.stream_label = None
+        self.stream_buf = ""
+        self.stream_dirty = False   # 새 조각이 와서 화면을 다시 그려야 하는지
+        self.last_streamed = None   # 마지막으로 다 흘려보낸 글 (최종 답과 같으면 말풍선을 또 만들지 않음)
 
         self._build_ui()
         self._enable_drop()
@@ -156,7 +161,7 @@ class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self._add_bubble("안녕하세요! 공부 노트 검색·복습 퀴즈·노션 정리, 할 일, 메모, 날씨 등 무엇이든 말씀하세요.", "bot")
         self.entry.focus()
 
-    def _add_bubble(self, text: str, who: str) -> None:
+    def _add_bubble(self, text: str, who: str):
         """who: 'user' | 'bot' | 'tool' | 'error'"""
         if who == "bot":
             text = pretty_markdown(text)
@@ -179,6 +184,10 @@ class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
             widget.grid(row=self.chat_row, column=0, padx=14, pady=5, ipadx=10, ipady=6,
                         sticky="e" if is_user else "w")
         self.chat_row += 1
+        self._scroll_bottom()
+        return widget  # 스트리밍 때 이 말풍선 글자를 계속 바꾸려고 돌려줌
+
+    def _scroll_bottom(self) -> None:
         self.after(50, lambda: self.chat._parent_canvas.yview_moveto(1.0))  # 맨 아래로 스크롤
 
     # ------------------------------------------------------------ API 키
@@ -335,8 +344,10 @@ class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
             answer = run_turn(
                 self.client, self.messages,
                 on_tool=lambda name, args: self.events.put(("tool", f"🔧 {name} {args}")),
+                # 글 조각이 오는 대로 큐에 넣음 → 메인 스레드가 0.1초마다 말풍선에 이어 붙임
+                on_text=lambda kind, text: self.events.put(("s_" + kind, text)),
             )
-            self.events.put(("bot", answer))
+            self.events.put(("final", answer))
         except Exception as e:
             del self.messages[checkpoint:]  # 실패한 질문은 기록에서 제거
             self.events.put(("error", friendly_error(e)))
@@ -349,15 +360,40 @@ class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
             while True:
                 kind, payload = self.events.get_nowait()
                 if kind == "done":
+                    self._finish_stream(self.stream_buf)  # 오류로 중간에 끊겨도 받은 데까지는 남김
+                    self.last_streamed = None
                     self._set_busy(False)
                 elif kind == "call":  # 다른 스레드가 맡긴 화면 작업 (정리 카드 등)
                     payload()
+                elif kind == "s_delta":  # 스트리밍 글 조각
+                    if self.stream_label is None:
+                        self.stream_label = self._add_bubble("", "bot")
+                    self.stream_buf += payload
+                    self.stream_dirty = True
+                elif kind == "s_end":  # 이 단계 글 끝 → 말풍선 마무리
+                    self._finish_stream(payload)
+                    self.last_streamed = payload
+                elif kind == "final":  # 최종 답. 이미 흘려보낸 글이면 말풍선을 또 만들지 않음
+                    if payload and payload != self.last_streamed:
+                        self._add_bubble(payload, "bot")
                 else:
                     self._add_bubble(payload, kind)
         except queue.Empty:
             pass
+        # 조각이 많이 와도 0.1초에 한 번만 다시 그림 (매 조각마다 그리면 화면이 버벅임)
+        if self.stream_dirty and self.stream_label is not None:
+            self.stream_label.configure(text=pretty_markdown(self.stream_buf) + " ▌")  # ▌ = 쓰는 중 표시
+            self.stream_dirty = False
+            self._scroll_bottom()
         self._update_status()
         self.after(100, self._poll_events)
+
+    def _finish_stream(self, text: str) -> None:
+        """스트리밍 중인 말풍선을 완성된 글로 고정하고 상태를 비움."""
+        if self.stream_label is not None:
+            self.stream_label.configure(text=pretty_markdown(text or self.stream_buf))
+            self._scroll_bottom()
+        self.stream_label, self.stream_buf, self.stream_dirty = None, "", False
 
     def _update_status(self) -> None:
         """창 아래 상태줄: '생각 중...' 과 노션 동기화 진행률을 같이 보여줌."""
