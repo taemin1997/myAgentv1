@@ -68,6 +68,22 @@ def test_compact_notice_becomes_notice_event(api):
     assert api.poll()["events"] == [{"type": "notice", "text": "🗜 오래된 대화를 요약해서 줄임 (약 30,000 → 8,000 토큰)"}]
 
 
+def test_merge_makes_one_day_card(api, tmp_path):
+    """하루치로 합치기(기본값): 파일 3개 → 카드 1개, 제목 하나 (89일차), 정리할 때 3개를 같이 보냄."""
+    for n in ("회의록.md", "기획서.md", "화면.txt"):
+        (tmp_path / n).write_text(n, encoding="utf-8")
+    api.add_files([str(p) for p in sorted(tmp_path.iterdir())])
+    r = api.make_note_cards(api.init()["templates"][0], merge=True)
+    assert [c["title"] for c in r["cards"]] == ["89일차"]
+    draft = next(e for e in drain(api, "card_draft") if e["type"] == "card_draft")
+    assert draft["text"].endswith("(3개)")  # 가짜 summarize_pdfs 가 받은 파일 수
+
+
+def test_merge_is_checked_by_default():
+    html = (W.WEB_DIR / "index.html").read_text(encoding="utf-8")
+    assert 'id="merge" checked' in html
+
+
 def test_send_without_key_asks_for_key(api):
     api._client = None
     assert api.send("hi") == {"ok": False, "need_key": True}

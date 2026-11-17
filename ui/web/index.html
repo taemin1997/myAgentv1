@@ -37,7 +37,10 @@
       <div class="attach-actions">
         <select id="template-select" title="정리 방식 (Notion 탭)"></select>
         <button class="btn small" id="btn-cards">📝 노트로 정리</button>
-        <label class="check"><input type="checkbox" id="merge"> 하루치로 합치기</label>
+        <!-- 기본은 켜짐: 매일 그날 자료 여러 개를 한 번에 올려서 '하루 노트 하나'로 만드는 게 보통이라서.
+             밀린 날 자료를 한꺼번에 올려 날짜별 노트로 나눌 때만 끔 -->
+        <label class="check" title="끄면 파일마다 다른 날(N일차, N+1일차…) 노트로 따로 정리">
+          <input type="checkbox" id="merge" checked> 하루치로 합치기</label>
         <button class="btn small ghost" id="btn-clear">✕ 첨부 취소</button>
       </div>
     </section>

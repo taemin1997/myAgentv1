@@ -134,7 +134,7 @@ class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):
         self.template_menu.pack(side="left", padx=(0, 6))
         ctk.CTkButton(actions, text="📝 노트로 정리", width=100, height=26, font=self.small_font,
                       command=self.make_note_cards).pack(side="left")
-        self.merge_var = ctk.BooleanVar(value=False)
+        self.merge_var = ctk.BooleanVar(value=True)  # 기본은 하루 노트 하나로 (웹 화면과 같게)
         ctk.CTkCheckBox(actions, text="하루치로 합치기", variable=self.merge_var, font=self.small_font,
                         checkbox_width=18, checkbox_height=18).pack(side="left", padx=10)
         ctk.CTkButton(actions, text="✕ 첨부 취소", width=70, height=26, font=self.small_font,
