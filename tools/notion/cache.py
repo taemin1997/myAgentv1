@@ -8,13 +8,13 @@ Notion 공개 API의 검색(/v1/search)은 페이지 '제목'만 찾음.
 다시 받아오기 때문에 두 번째 동기화부터는 빠름.
 """
 
-import json
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 from core.paths import DATA_DIR
+from core.storage import lock_for, read_json, write_json
 
 from .blocks import _page_text, _plain
 from .client import (DATE_PROP, REVIEW_PROP, TITLE_PROP, TOPIC_PROP, TYPE_PROP, NotionError,
@@ -25,14 +25,28 @@ AUTO_SYNC_AFTER = timedelta(minutes=30)  # 마지막 동기화 후 이만큼 지
 
 
 def _load_cache() -> dict:
-    if CACHE_FILE.exists():
-        return json.loads(CACHE_FILE.read_text(encoding="utf-8"))
-    return {"synced_at": None, "pages": {}}
+    return read_json(CACHE_FILE, {"synced_at": None, "pages": {}})
 
 
 def _save_cache(cache: dict) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    CACHE_FILE.write_text(json.dumps(cache, ensure_ascii=False, indent=1), encoding="utf-8")
+    """캐시 저장. 그냥 덮어쓰지 않고, 파일 쪽에 더 최신(edited 가 더 늦은) 페이지가 있으면 그걸 살림.
+
+    동기화는 캐시를 메모리에 들고 몇 분 동안 돌면서 중간중간 저장하는데, 그 사이에
+    mark_note_reviewed 가 '복습 체크'를 저장하면 동기화의 다음 저장이 그걸 옛 값으로 덮어써 버림.
+    edited(Notion last_edited_time, ISO 문자열이라 글자 비교 = 시간 비교)가 더 늦은 쪽을 남겨서 막음.
+    살린 값은 메모리의 cache 에도 넣어서 다음 저장 때 또 덮어쓰지 않게 함.
+    단, 본문(text)은 메모리 쪽이 이번 동기화에서 새로 받은 것(edited 가 채워짐)이면 그걸 씀
+    (복습 체크는 속성만 바꾸고 본문은 안 바꿔서, 방금 받은 본문이 버려지면 손해만 봄)."""
+    with lock_for(CACHE_FILE):
+        on_disk = _load_cache()["pages"]
+        for pid, page in cache["pages"].items():
+            disk = on_disk.get(pid)
+            if disk and disk.get("edited", "") > page.get("edited", ""):
+                merged = dict(disk)
+                if page.get("edited") and page.get("text"):
+                    merged["text"] = page["text"]
+                cache["pages"][pid] = merged
+        write_json(CACHE_FILE, cache, indent=1)
 
 
 def kst_date(iso: str) -> str:

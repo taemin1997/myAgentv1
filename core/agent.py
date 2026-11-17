@@ -14,6 +14,7 @@ import openai
 from dotenv import load_dotenv
 
 import tools.notion as notion_tools
+from core import usage
 from core.paths import ENV_FILE
 from study import templates
 from study.attachments import build_user_content
@@ -27,6 +28,11 @@ MODEL = os.getenv("AGENT_MODEL", "gpt-5.4-mini")
 HEAVY_MODEL = os.getenv("AGENT_MODEL_HEAVY", "gpt-5.4")
 HEAVY_WINDOW = 12  # 최근 메시지 몇 개 안에 갱신 작업 흔적이 있으면 상위 모델 유지 ("응 반영해" 같은 다음 턴까지)
 MAX_STEPS = 15  # 질문 하나에 도구 호출을 반복하는 최대 횟수 (무한루프 방지)
+# 대화 기록이 이만큼(추정 토큰) 넘으면 오래된 부분을 요약해서 줄임. 매 질문마다 기록 전체를 다시 보내서
+# 기록이 길수록 질문 하나의 입력 비용이 계속 커지기 때문. 최근 KEEP_RECENT_TURNS 개 질문은 원문 그대로 둠
+SUMMARY_TRIGGER = int(os.getenv("SUMMARY_TRIGGER_TOKENS", "24000"))
+KEEP_RECENT_TURNS = 4
+SUMMARY_HEAD = "[이전 대화 요약] 오래된 대화를 줄인 것. 필요하면 이 내용을 이어서 쓸 것.\n"
 
 # 노트 정리 형식(강의노트·회의록·주간회고 …)은 templates.py → prompts/*.md 파일에 따로 저장함.
 # 시스템 프롬프트에는 이름만 넣고 본문은 정리할 때만 불러서, 매 요청마다 붙는 토큰을 줄임.
@@ -123,15 +129,21 @@ def _ask_model(client: openai.OpenAI, model: str, messages: list,
     스트리밍에선 도구 호출도 조각(이름·인자 JSON 일부)으로 나눠 오니까 index 별로 이어 붙여서 완성함.
     on_text 가 없으면(터미널 버전·테스트) 예전처럼 한 번에 받음."""
     if on_text is None:
-        msg = client.chat.completions.create(model=model, messages=messages, tools=TOOL_SCHEMAS).choices[0].message
+        response = client.chat.completions.create(model=model, messages=messages, tools=TOOL_SCHEMAS)
+        usage.record(model, getattr(response, "usage", None))  # 토큰·비용 기록 (core/usage.py)
+        msg = response.choices[0].message
         calls = [{"id": c.id, "type": "function",
                   "function": {"name": c.function.name, "arguments": c.function.arguments}}
                  for c in msg.tool_calls or []]
         return msg.content or "", msg.refusal or "", calls
 
     text, refusal, calls = [], [], {}
-    stream = client.chat.completions.create(model=model, messages=messages, tools=TOOL_SCHEMAS, stream=True)
+    # include_usage: 스트리밍은 이걸 줘야 마지막 조각에 토큰 사용량이 붙어 옴 (안 주면 비용을 알 수 없음)
+    stream = client.chat.completions.create(model=model, messages=messages, tools=TOOL_SCHEMAS, stream=True,
+                                            stream_options={"include_usage": True})
     for chunk in stream:
+        if getattr(chunk, "usage", None):
+            usage.record(model, chunk.usage)
         if not chunk.choices:  # 마지막 사용량 조각 등은 choices 가 비어 있음
             continue
         delta = chunk.choices[0].delta
@@ -170,6 +182,7 @@ def run_turn(
     부르는 순간 다음 단계부터 상위 모델로 넘어감 (무슨 작업인지 판단 자체는 싼 모델이 해도 충분해서)."""
     current = None
     notion_tools.begin_batch()  # 이 질문에서 한 Notion 수정은 한 묶음 → "되돌려줘" 한 번에 같이 되돌림
+    compact_history(client, messages, on_tool)  # 기록이 길면 오래된 부분 요약 (비용 절약)
     for _ in range(MAX_STEPS):
         model = pick_model(messages)
         if model != current and model == HEAVY_MODEL and on_tool:
@@ -196,6 +209,76 @@ def run_turn(
     return "(도구 호출이 너무 많아 중단했어요. 질문을 나눠서 해 주세요.)"
 
 
+def estimate_tokens(messages: list) -> int:
+    """기록의 토큰 수 어림값. 정확히 세려면 토크나이저가 필요한데, 요약할지 말지 정하는 데는 어림으로 충분함.
+    한국어는 대략 1~1.5글자, 영어는 약 4글자가 토큰 1개라서 섞인 글 기준 '글자 수 / 2' 로 봄. 이미지는 장당 1000."""
+    chars = 0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str):
+            chars += len(c)
+        elif isinstance(c, list):
+            chars += sum(len(p.get("text", "")) for p in c) + 2000 * sum(p.get("type") == "image_url" for p in c)
+        chars += sum(len(call["function"]["arguments"]) for call in m.get("tool_calls") or [])
+    return chars // 2
+
+
+def _transcript(messages: list, per_message: int = 1500) -> str:
+    """요약용으로 기록을 사람이 읽는 대화 형태로. 도구 결과는 길어서 앞부분만."""
+    lines = []
+    for m in messages:
+        role, c = m.get("role"), m.get("content")
+        if isinstance(c, list):
+            c = "\n".join(p.get("text", "") for p in c if p.get("type") == "text") + "\n(이미지 첨부)"
+        c = (c or "")[: per_message if role != "tool" else 500]
+        if role == "assistant" and m.get("tool_calls"):
+            calls = ", ".join(f"{t['function']['name']}({t['function']['arguments'][:200]})" for t in m["tool_calls"])
+            lines.append(f"[비서 → 도구] {calls}" + (f"\n[비서] {c}" if c else ""))
+        elif c:
+            lines.append({"user": "[사용자]", "assistant": "[비서]", "tool": "[도구 결과]",
+                          "system": "[이전 요약]"}.get(role, f"[{role}]") + " " + c)
+    return "\n".join(lines)
+
+
+def compact_history(client: openai.OpenAI, messages: list, on_tool: Callable | None = None) -> bool:
+    """기록이 SUMMARY_TRIGGER 보다 길면 오래된 부분을 싼 모델로 요약해서 시스템 메시지 하나로 바꿈.
+
+    - 자르는 곳은 사용자 질문 바로 앞 → 도구 호출(tool_calls)과 그 결과(tool)가 갈라지지 않음
+      (갈라지면 OpenAI 가 '결과 없는 도구 호출' 오류를 냄)
+    - 최종 프로젝트 갱신 중(상위 모델 구간)엔 줄이지 않음: 계획 → "응 반영해" 맥락이 끊기면 엉뚱하게 고칠 수 있어서
+    - 요약이 실패해도 대화는 그대로 진행 (요약은 비용 절약용이지 꼭 필요한 일이 아님)
+    돌려주는 값: 줄였으면 True."""
+    before = estimate_tokens(messages)
+    if before < SUMMARY_TRIGGER or pick_model(messages) == HEAVY_MODEL:
+        return False
+    user_at = [i for i, m in enumerate(messages) if i > 0 and m.get("role") == "user"]
+    if len(user_at) <= KEEP_RECENT_TURNS:
+        return False
+    cut = user_at[-KEEP_RECENT_TURNS]
+    # 줄일 옛 부분이 작으면 안 함: 최근 질문들만으로 기준을 넘는 경우(큰 첨부 등) 매 질문마다
+    # '요약 + 한 턴'을 또 요약하느라 요약 호출 비용만 계속 드는 걸 막음
+    if estimate_tokens(messages[1:cut]) < SUMMARY_TRIGGER // 3:
+        return False
+    try:
+        response = client.chat.completions.create(model=MODEL, messages=[
+            {"role": "system", "content":
+                "사용자(부트캠프 수강생)와 개인 비서의 예전 대화를 이어서 대화할 수 있게 요약함. 한국어, 반말체(~임/~함), 목록으로.\n"
+                "꼭 남길 것: 사용자가 정한 것·부탁한 방식, 저장·수정한 Notion 페이지 제목과 URL, 진행 중이거나 미뤄 둔 일, "
+                "아직 답하지 않은 질문, 퀴즈 진행 상황. 도구 결과 원문·인사말은 빼고, 대화에 없는 내용은 절대 지어내지 말 것."},
+            {"role": "user", "content": _transcript(messages[1:cut])},
+        ])
+        usage.record(MODEL, getattr(response, "usage", None))
+        summary = (response.choices[0].message.content or "").strip()
+    except Exception:  # noqa: BLE001 - 요약 실패는 무시하고 원래 기록으로 계속
+        return False
+    if not summary:
+        return False
+    messages[1:cut] = [{"role": "system", "content": SUMMARY_HEAD + summary}]
+    if on_tool:
+        on_tool("🗜 오래된 대화를 요약해서 줄임", f"약 {before:,} → {estimate_tokens(messages):,} 토큰")
+    return True
+
+
 def summarize_pdfs(client: openai.OpenAI, attachments: list, title: str, template: str = "강의노트") -> str:
     """PDF(들) → 노트 마크다운. 채팅 기록과 상관없는 1회성 호출.
 
@@ -216,6 +299,7 @@ def summarize_pdfs(client: openai.OpenAI, attachments: list, title: str, templat
             {"role": "user", "content": user_content},
         ],
     )
+    usage.record(MODEL, getattr(response, "usage", None))
     return (response.choices[0].message.content or "").strip()
 
 

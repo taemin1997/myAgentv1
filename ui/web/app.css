@@ -1,0 +1,195 @@
+/* 색은 전부 :root 변수로. 윈도우 다크 모드면 아래 @media 에서 바뀜 (WebView2 가 시스템 설정을 따라감) */
+:root {
+  --bg: #f6f7fb;
+  --panel: #ffffff;
+  --line: #e3e6ee;
+  --text: #1c2130;
+  --muted: #6b7385;
+  --accent: #4f6bed;
+  --accent-text: #ffffff;
+  --user-bg: #4f6bed;
+  --user-text: #ffffff;
+  --bot-bg: #ffffff;
+  --code-bg: #f1f3f8;
+  --error-bg: #fde8e8;
+  --error-text: #9b1c1c;
+  --heavy: #d97706;
+  --shadow: 0 1px 2px rgba(20, 30, 60, .06), 0 2px 8px rgba(20, 30, 60, .05);
+  --radius: 14px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171e;
+    --panel: #1e212b;
+    --line: #2e3240;
+    --text: #e8eaf0;
+    --muted: #9097a8;
+    --accent: #7088ff;
+    --user-bg: #4f6bed;
+    --bot-bg: #1e212b;
+    --code-bg: #262a36;
+    --error-bg: #3a1d1d;
+    --error-text: #f5b4b4;
+    --heavy: #f59e0b;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--text);
+  font: 14.5px/1.6 "Malgun Gothic", "Segoe UI", system-ui, sans-serif;
+}
+button, select, textarea, input { font: inherit; color: inherit; }
+
+/* ---------- 상단 바 ---------- */
+.top {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.logo { color: var(--accent); font-size: 12px; }
+.name { font-weight: 700; white-space: nowrap; }
+.chip {
+  font-size: 12px; color: var(--muted);
+  padding: 1px 8px; border: 1px solid var(--line); border-radius: 999px; white-space: nowrap;
+}
+.chip.heavy { color: var(--heavy); border-color: var(--heavy); }
+.chip.cost { cursor: help; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.chip.cost:empty { display: none; }
+@media (max-width: 520px) { #model-chip { display: none; } } /* 좁은 창에선 비용을 먼저 보여 줌 */
+.top-actions { display: flex; gap: 6px; }
+
+.btn {
+  border: 1px solid var(--line); background: var(--panel);
+  border-radius: 9px; padding: 5px 12px; cursor: pointer; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
+.btn.ghost { background: transparent; color: var(--muted); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.btn.small { padding: 3px 10px; font-size: 13px; }
+.icon-btn {
+  width: 40px; height: 40px; flex: none;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; font-size: 17px;
+}
+.icon-btn:disabled { opacity: .5; cursor: default; }
+
+/* ---------- 대화 ---------- */
+.chat {
+  flex: 1; overflow-y: auto;
+  padding: 16px 14px 8px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.msg { max-width: 86%; padding: 9px 13px; border-radius: var(--radius); word-break: break-word; }
+.msg.user {
+  align-self: flex-end; background: var(--user-bg); color: var(--user-text);
+  border-bottom-right-radius: 4px; white-space: pre-wrap;
+}
+.msg.bot {
+  align-self: flex-start; background: var(--bot-bg); border: 1px solid var(--line);
+  border-bottom-left-radius: 4px; box-shadow: var(--shadow);
+}
+.msg.error { align-self: flex-start; background: var(--error-bg); color: var(--error-text); white-space: pre-wrap; }
+.msg.streaming::after { content: "▌"; color: var(--accent); animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+
+/* 도구 실행 표시 (나중에 담당 캐릭터 한 줄로 바뀔 자리) */
+.tool {
+  align-self: flex-start; font-size: 12.5px; color: var(--muted);
+  display: flex; gap: 6px; align-items: baseline; max-width: 92%;
+}
+.tool .tname { font-family: Consolas, "Malgun Gothic", monospace; color: var(--text); opacity: .8; }
+.tool .targs { font-family: Consolas, "Malgun Gothic", monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.tool .targs.open { white-space: pre-wrap; word-break: break-all; }
+.tool.heavy { color: var(--heavy); }
+.notice { align-self: center; font-size: 12.5px; color: var(--muted); }
+
+/* 말풍선 안 마크다운 */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: .45em 0; }
+.md h1, .md h2, .md h3, .md h4 { margin: .9em 0 .35em; line-height: 1.35; }
+.md h1 { font-size: 1.25em; } .md h2 { font-size: 1.15em; } .md h3 { font-size: 1.05em; } .md h4 { font-size: 1em; }
+.md ul, .md ol { margin: .35em 0; padding-left: 1.4em; }
+.md li { margin: .1em 0; }
+.md li.task { list-style: none; margin-left: -1.3em; }
+.md li.task input { margin: 0 .3em 0 0; vertical-align: -2px; }
+.md code { font-family: Consolas, "Malgun Gothic", monospace; font-size: .92em; background: var(--code-bg); padding: .05em .35em; border-radius: 5px; }
+.md pre { position: relative; background: var(--code-bg); border-radius: 9px; padding: 10px 12px; overflow-x: auto; margin: .5em 0; }
+.md pre code { background: none; padding: 0; white-space: pre; }
+.md pre .lang { position: absolute; top: 4px; right: 8px; font-size: 11px; color: var(--muted); }
+.md blockquote { margin: .5em 0; padding: .1em .8em; border-left: 3px solid var(--line); color: var(--muted); }
+.md hr { border: none; border-top: 1px solid var(--line); margin: .8em 0; }
+.md a { color: var(--accent); }
+.table-wrap { overflow-x: auto; margin: .5em 0; }
+.md table { border-collapse: collapse; font-size: .95em; }
+.md th, .md td { border: 1px solid var(--line); padding: 4px 9px; text-align: left; vertical-align: top; }
+.md th { background: var(--code-bg); }
+
+/* ---------- 정리 카드 ---------- */
+.card {
+  align-self: stretch; background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--radius); padding: 12px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.card .head { font-size: 13px; color: var(--muted); word-break: break-all; }
+.card .meta { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 13px; }
+.card .meta input[type=text] { width: 96px; padding: 3px 7px; border: 1px solid var(--line); border-radius: 7px; background: var(--bg); }
+.card .meta input.wide { width: 120px; }
+.card .meta input.date { width: 112px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: none; background: transparent; padding: 2px 10px; cursor: pointer; font-size: 13px; }
+.seg button.on { background: var(--accent); color: var(--accent-text); }
+.card textarea, .card .preview {
+  min-height: 260px; max-height: 480px; width: 100%;
+  border: 1px solid var(--line); border-radius: 9px; padding: 9px 11px; background: var(--bg);
+}
+.card textarea { resize: vertical; line-height: 1.55; }
+.card .preview { overflow-y: auto; }
+.card .foot { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
+.card .foot .state { word-break: break-all; }
+
+/* ---------- 상태줄·입력 ---------- */
+.status { min-height: 22px; padding: 0 16px; font-size: 12.5px; color: var(--muted); }
+.composer { background: var(--panel); border-top: 1px solid var(--line); padding: 10px 14px 12px; }
+.input-row { display: flex; gap: 8px; align-items: flex-end; }
+#input {
+  flex: 1; resize: none; height: 40px; min-height: 40px; max-height: 160px;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--bg); line-height: 1.5;
+}
+#input:focus { outline: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); border-color: var(--accent); }
+#btn-send { height: 40px; }
+
+.attach-bar { margin-bottom: 8px; }
+.attach-list { list-style: none; margin: 0 0 6px; padding: 0; font-size: 13px; color: var(--muted); display: flex; flex-direction: column; gap: 2px; }
+.attach-list .warn { color: var(--heavy); }
+.attach-actions { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 13px; }
+.attach-actions select { padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.check { display: inline-flex; gap: 4px; align-items: center; cursor: pointer; }
+
+/* ---------- 끌어다 놓기·대화상자 ---------- */
+.drop-overlay {
+  position: fixed; inset: 0; z-index: 10; pointer-events: none;
+  display: flex; align-items: center; justify-content: center;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border: 3px dashed var(--accent); font-size: 18px; font-weight: 700; color: var(--accent);
+}
+.drop-overlay[hidden] { display: none; }
+dialog {
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); color: var(--text);
+  width: min(420px, calc(100vw - 32px)); padding: 18px;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .35); }
+dialog h3 { margin: 0 0 6px; }
+dialog p { margin: 0 0 12px; color: var(--muted); font-size: 13px; white-space: pre-line; }
+dialog input { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--bg); }
+dialog menu { display: flex; justify-content: flex-end; gap: 8px; margin: 14px 0 0; padding: 0; }

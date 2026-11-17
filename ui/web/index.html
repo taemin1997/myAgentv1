@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>개인 비서</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <!-- 상단 바: 이름 · 모델 · 버튼 -->
+  <header class="top">
+    <div class="brand">
+      <span class="logo">●</span>
+      <span class="name">개인 비서</span>
+      <span class="chip" id="model-chip"></span>
+      <span class="chip heavy" id="heavy-chip" hidden></span>
+      <span class="chip cost" id="cost-chip"></span>
+    </div>
+    <div class="top-actions">
+      <button class="btn" id="btn-new">새 대화</button>
+      <button class="btn ghost" id="btn-notion">Notion</button>
+      <button class="btn ghost" id="btn-key">API 키</button>
+    </div>
+  </header>
+
+  <!-- 대화 영역 -->
+  <main id="chat" class="chat" aria-live="polite"></main>
+
+  <!-- 상태줄 (생각 중 · 노션 동기화) -->
+  <div class="status" id="status"></div>
+
+  <!-- 입력 영역 -->
+  <footer class="composer">
+    <!-- 첨부 표시줄: 첨부가 있을 때만 보임 -->
+    <section class="attach-bar" id="attach-bar" hidden>
+      <ul class="attach-list" id="attach-list"></ul>
+      <div class="attach-actions">
+        <select id="template-select" title="정리 방식 (Notion 탭)"></select>
+        <button class="btn small" id="btn-cards">📝 노트로 정리</button>
+        <label class="check"><input type="checkbox" id="merge"> 하루치로 합치기</label>
+        <button class="btn small ghost" id="btn-clear">✕ 첨부 취소</button>
+      </div>
+    </section>
+    <div class="input-row">
+      <button class="icon-btn" id="btn-attach" title="파일 첨부 (창에 끌어다 놓아도 됨)">📎</button>
+      <textarea id="input" rows="1" placeholder="메시지 입력 · 파일은 창에 끌어다 놓기" title="Enter 전송 · Shift+Enter 줄바꿈"></textarea>
+      <button class="btn primary" id="btn-send">전송</button>
+    </div>
+  </footer>
+
+  <!-- 파일을 끌고 들어오면 덮는 안내 -->
+  <div class="drop-overlay" id="drop-overlay" hidden><div>여기에 놓으면 첨부돼요</div></div>
+
+  <!-- 키·토큰 입력 창 -->
+  <dialog id="secret-dialog">
+    <form method="dialog">
+      <h3 id="secret-title"></h3>
+      <p id="secret-desc"></p>
+      <input type="password" id="secret-input" autocomplete="off" spellcheck="false">
+      <menu>
+        <button value="cancel" class="btn ghost">취소</button>
+        <button value="ok" class="btn primary" id="secret-ok">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="markdown.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

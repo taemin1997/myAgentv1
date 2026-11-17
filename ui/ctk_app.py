@@ -21,7 +21,7 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 
 import tools.notion as notion_tools
 from core.agent import MODEL, friendly_error, new_conversation, run_turn
-from core.paths import ENV_FILE
+from core.paths import save_env
 from study import templates
 from study.attachments import FILE_TYPES, build_user_content, drop_old_pdf_bodies, load_file
 from ui.note_cards import NoteCard
@@ -48,15 +48,6 @@ def pretty_markdown(text: str) -> str:
         line = re.sub(r"^(\s*)[-*] ", r"\1• ", line)  # - 목록 → • 목록
         out.append(line)
     return "\n".join(out)
-
-
-def save_env(name: str, value: str) -> None:
-    """.env 의 name= 줄을 새 값으로 바꾸거나, 없으면 추가한다. 실행 중인 프로그램에도 바로 반영."""
-    lines = ENV_FILE.read_text(encoding="utf-8").splitlines() if ENV_FILE.exists() else []
-    lines = [l for l in lines if not l.strip().startswith(f"{name}=")]
-    lines.append(f"{name}={value}")
-    ENV_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    os.environ[name] = value
 
 
 class AssistantApp(ctk.CTk, TkinterDnD.DnDWrapper):

@@ -1,9 +1,9 @@
 """백업 & 되돌리기: 앱이 Notion을 고칠 때마다 무엇을 지우고 넣었는지 기록하고, 질문 단위로 되돌림."""
 
-import json
 from datetime import datetime
 
 from core.paths import DATA_DIR
+from core.storage import read_json, update_json
 from core.toolkit import tool
 
 from .blocks import _append, _block, _children
@@ -24,16 +24,13 @@ def begin_batch() -> None:
 
 
 def _history() -> list[dict]:
-    if HISTORY_FILE.exists():
-        return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
-    return []
+    return read_json(HISTORY_FILE, [])
 
 
 def _record(entry: dict) -> None:
-    hist = _history()
-    hist.append({"batch": CURRENT_BATCH["id"], "time": datetime.now().strftime("%m/%d %H:%M"), **entry})
-    DATA_DIR.mkdir(exist_ok=True)
-    HISTORY_FILE.write_text(json.dumps(hist[-HISTORY_KEEP:], ensure_ascii=False), encoding="utf-8")
+    # 채팅 도구와 웹 화면 정리 카드가 동시에 기록할 수 있어서 읽기~쓰기를 잠금 하나로 (core/storage.py)
+    item = {"batch": CURRENT_BATCH["id"], "time": datetime.now().strftime("%m/%d %H:%M"), **entry}
+    update_json(HISTORY_FILE, [], lambda hist: (hist + [item])[-HISTORY_KEEP:])
 
 
 def _clean_rich(items: list) -> list:
@@ -111,8 +108,8 @@ def undo_last_update() -> str:
     except NotionError as err:
         problems.append(str(err))
     # 되돌린 기록은 지움 (다음 되돌리기는 그 전 수정)
-    rest = [e for e in hist if e["batch"] != batch]
-    HISTORY_FILE.write_text(json.dumps(rest, ensure_ascii=False), encoding="utf-8")
+    # 되돌리는 동안 새로 쌓인 기록이 있을 수 있어서, 처음 읽은 hist 가 아니라 지금 파일에서 이 batch 만 뺌
+    update_json(HISTORY_FILE, [], lambda now: [e for e in now if e["batch"] != batch])
     start_background_sync()
     when = todo[0]["time"]
     return (f"{when}에 한 수정 {len(todo)}건을 되돌림:\n" + "\n".join(f"- {d}" for d in done)

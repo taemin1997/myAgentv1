@@ -10,6 +10,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from core.paths import DATA_DIR
+from core.storage import read_json, write_json
 from core.toolkit import tool
 
 NOTES_FILE = DATA_DIR / "notes.json"
@@ -17,15 +18,13 @@ TODOS_FILE = DATA_DIR / "todos.json"
 
 
 # ---------------------------------------------------------------- 저장 헬퍼
+# 쓰다가 꺼져도 파일이 안 깨지게 core/storage.py 의 임시 파일 → 바꿔치기 방식을 씀
 def _load(path: Path) -> list[dict]:
-    if not path.exists():
-        return []
-    return json.loads(path.read_text(encoding="utf-8"))
+    return read_json(path, [])
 
 
 def _save(path: Path, items: list[dict]) -> None:
-    DATA_DIR.mkdir(exist_ok=True)
-    path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_json(path, items, indent=2)
 
 
 def _now() -> str:

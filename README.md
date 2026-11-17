@@ -14,7 +14,7 @@ OpenAI API의 **function calling**으로 만든 데스크톱 개인 비서.
 | 방법 | 설명 |
 |---|---|
 | `dist\PersonalAssistant.exe` | 빌드한 exe. 파이썬 없이 실행 (`scripts\build.bat`로 생성) |
-| `scripts\개인비서.bat` 또는 `uv run app.py` | 파이썬(.venv)으로 바로 실행. 코드 고친 걸 빌드 없이 확인할 때 |
+| `scripts\개인비서.bat` 또는 `uv run app.py` | 파이썬(.venv)으로 바로 실행. 코드 고친 걸 빌드 없이 확인할 때 (`--ctk`면 예전 화면) |
 | `uv run main.py` | 터미널 버전 |
 
 - 처음 실행 때 API 키가 없으면 입력창이 뜨고, 입력한 키는 `.env`에 저장됨
@@ -124,6 +124,15 @@ Notion이 초당 요청 수를 제한해서 더 빠르게는 안 됨. 이후엔 
 - 계획 → `응 반영해` 턴까지 유지되고, 반영을 마치면 다시 기본 모델로 돌아감
 - 바꾸려면 `.env`(exe는 `dist\.env`)에 한 줄 추가하고 앱만 다시 켜면 됨 (빌드 다시 안 해도 됨)
 
+## 비용
+
+- 창 위쪽에 **이번 대화 · 오늘** 비용이 보임. 마우스를 올리면 토큰 수·모델별·이번 달 합계
+- 모델 응답의 토큰 사용량 × `core/usage.py` 가격표로 계산한 **추정치** (실제 청구는 OpenAI 대시보드).
+  가격이 바뀌면 `.env`에 `PRICE_GPT_5_4_MINI=0.75,0.075,4.5`처럼 (입력, 캐시 입력, 출력 $/100만 토큰)
+- 날짜별 기록은 `data/usage.json`
+- 대화가 길어지면(추정 24,000토큰, `SUMMARY_TRIGGER_TOKENS`) 최근 질문 4개만 원문으로 두고 그 앞은 싼 모델로 요약해서 줄임
+  (매 질문마다 기록 전체를 다시 보내서, 기록이 길수록 질문 하나가 비싸지기 때문). 최종 프로젝트 갱신 중엔 맥락이 중요해서 안 줄임
+
 ## exe 만들기
 
 `scripts\build.bat` 더블클릭 → `dist\PersonalAssistant.exe` 생성 (파이썬 설치 없이 실행 가능)
@@ -131,8 +140,19 @@ Notion이 초당 요청 수를 제한해서 더 빠르게는 안 됨. 이후엔 
 - `.env`·`data\`·`prompts\`는 **exe와 같은 폴더**에 생김. `build.bat`이 `.env`를 `dist\`로 복사해 줌
 - 코드를 고친 뒤에는 `build.bat`을 다시 실행해야 exe에 반영됨. exe가 켜져 있으면 먼저 닫을 것
 - `build.bat`은 `scripts\` 안에 있지만 저장소 맨 위로 이동해서 빌드함 (진입점은 맨 위 `app.py`)
-- 끌어다 놓기용 `tkinterdnd2`는 `--collect-all`로 같이 묶음
+- 화면 파일(`ui/web/`)은 `--add-data`로, pywebview는 `--collect-all webview`로 같이 묶음.
+  웹 화면은 윈도우에 기본으로 깔린 Edge WebView2로 그려짐
+- 예전 화면용 `tkinterdnd2`·`customtkinter`도 아직 같이 묶음 (`--ctk`로 띄울 수 있게)
 - 백신이 서명 없는 exe를 의심할 수 있음 (직접 만든 파일이면 허용)
+
+## 테스트
+
+```
+uv run pytest -q
+```
+
+- 진짜 Notion·GitHub·OpenAI 대신 가짜를 끼워서 돌림 (`tests/conftest.py`). data/ 파일도 임시 폴더를 씀
+- 제일 중요한 건 `test_update_section.py`: 최종 프로젝트 섹션 갱신이 다른 섹션을 안 건드리는지, 되돌리기가 원래대로 돌아가는지
 
 ## 파일 구조
 
@@ -142,7 +162,9 @@ myAgent/
 ├─ core/                에이전트 두뇌
 │   ├─ agent.py         루프(run_turn)·스트리밍·시스템 프롬프트·모델 선택(pick_model)·카드용 정리(summarize_pdfs)
 │   ├─ toolkit.py       @tool 데코레이터 (타입 힌트·docstring → 도구 스키마)
-│   └─ paths.py         .env·data/·prompts/ 위치 (exe일 때는 exe 옆, 아니면 저장소 맨 위)
+│   ├─ paths.py         .env·data/·prompts/ 위치 (exe일 때는 exe 옆, 아니면 저장소 맨 위)
+│   ├─ storage.py       data/ JSON 안전하게 읽고 쓰기 (임시 파일 → 바꿔치기, 파일별 잠금)
+│   └─ usage.py         토큰·비용 기록 (가격표, data/usage.json)
 ├─ tools/               모델이 쓰는 도구 20개 (나중에 캐릭터 칸과 대응)
 │   ├─ __init__.py      도구 목록(ALL_TOOLS)·스키마·run_tool
 │   ├─ life.py          시간·계산·메모·할 일·날씨
@@ -158,8 +180,11 @@ myAgent/
 │   ├─ templates.py     정리 방식 템플릿 (prompts/*.md 읽기·쓰기, 드롭다운 라벨)
 │   └─ attachments.py   첨부 파일 읽기 (PDF·docx·pptx·HTML·텍스트·이미지)
 ├─ ui/                  화면
-│   ├─ ctk_app.py       CustomTkinter 채팅 창 (첨부·끌어다 놓기·스트리밍)
-│   └─ note_cards.py    정리 카드
+│   ├─ web_app.py       웹 화면 (pywebview). JS ↔ 파이썬 다리(Api), 끌어다 놓기 실제 경로
+│   ├─ web/             index.html · app.css · app.js · markdown.js (mock.js = 브라우저 미리보기용 가짜 api)
+│   ├─ ctk_app.py       예전 CustomTkinter 창 (`uv run app.py --ctk`). 웹 화면이 안정되면 지움
+│   └─ note_cards.py    예전 창의 정리 카드
+├─ tests/               자동 테스트 (uv run pytest -q). Notion·GitHub·OpenAI는 가짜라 실제 데이터 안 건드림
 ├─ prompts/             템플릿 파일 (강의노트·회의록·주간회고·프로젝트·면접·최종갱신)
 ├─ scripts/             build.bat (exe 빌드), 개인비서.bat (더블클릭 실행)
 ├─ CLAUDE.md            Claude로 이어서 작업할 때의 규칙·결정 사항·고도화 현황 (계속 갱신)
