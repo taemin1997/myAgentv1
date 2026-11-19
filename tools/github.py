@@ -19,6 +19,12 @@
   2) 사용자가 카드에서 제목·본문을 확인(수정)하고 'GitHub에 올리기'를 눌러야 create_issue 가 불림
 create_issue 는 도구 목록(ALL_TOOLS)에 없어서 모델이 직접 부를 방법이 없음.
 쓰기는 인증이 꼭 필요함 → GITHUB_TOKEN 에 이슈 쓰기 권한(classic 토큰이면 public_repo) 필요.
+
+[이슈 닫기·삭제]
+같은 방식. 모델은 draft_issue_removal 로 '확인 카드'만 띄우고, 닫기(close_issue)·삭제(delete_issue)는 카드 버튼만 부름.
+- 삭제는 되돌릴 수 없어서 버튼을 두 번 눌러야 하고, **내가 쓴 이슈만** 지움 (저장소 admin이라 원래는 팀원 이슈도
+  지울 수 있는 권한이라서 막아 둠). 작성자 확인은 버튼을 누른 순간 다시 함 (카드가 뜬 뒤에 바뀌었을 수도 있어서)
+- REST API에는 이슈 삭제가 없어서 GraphQL deleteIssue 를 씀 (저장소 admin 권한 필요)
 """
 
 import json
@@ -60,14 +66,15 @@ def _get(path: str):
         raise GitHubError(f"GitHub 연결 실패: {e.reason}")
 
 
-def _post(path: str, payload: dict):
-    """쓰기 요청. 읽기(_get)와 달리 토큰이 없으면 아예 안 보냄 (어차피 401이라 요청 한도만 날림)."""
+def _post(path: str, payload: dict, method: str = "POST"):
+    """쓰기 요청 (올리기 POST, 닫기 PATCH, 삭제는 GraphQL POST).
+    읽기(_get)와 달리 토큰이 없으면 아예 안 보냄 (어차피 401이라 요청 한도만 날림)."""
     token = os.getenv("GITHUB_TOKEN")
     if not token:
-        raise GitHubError("이슈를 올리려면 .env에 GITHUB_TOKEN이 필요함 (classic 토큰이면 public_repo 권한)")
+        raise GitHubError("이슈를 쓰려면 .env에 GITHUB_TOKEN이 필요함 (classic 토큰이면 public_repo 권한)")
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "my-agent",
                "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    req = urllib.request.Request(API + path, data=json.dumps(payload).encode(), headers=headers, method="POST")
+    req = urllib.request.Request(API + path, data=json.dumps(payload).encode(), headers=headers, method=method)
     try:
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read().decode())
@@ -254,4 +261,75 @@ def draft_github_issue(title: str, body: str, labels: str = "", repo: str = "") 
             "사용자에게 카드에서 확인·수정 후 'GitHub에 올리기'를 누르라고 짧게 안내하고, 본문을 다시 붙여넣지 말 것." + note)
 
 
-GITHUB_TOOLS = [get_my_commits, draft_github_issue]
+# 닫기·삭제 확인 카드를 받는 자리 (올리기 카드와 같은 방식)
+ISSUE_REMOVAL_HANDLER: Callable[[dict], None] | None = None
+
+
+def get_issue(repo: str, number: int) -> dict:
+    """카드에 보여줄 이슈 정보. PR도 이슈 번호를 같이 써서, PR이면 거절 (PR 삭제는 이 기능 범위 밖)."""
+    try:
+        i = _get(f"/repos/{repo}/issues/{int(number)}")
+    except GitHubError as e:
+        # _get 의 404 문구는 저장소 기준이라 이슈에 맞게 바꿈. 지운 이슈는 410(Gone)으로 옴
+        if "못 찾음" in str(e) or "410" in str(e):
+            raise GitHubError(f"{repo}에 {number}번 이슈가 없음 (이미 지워졌거나 번호가 틀림)")
+        raise
+    if "pull_request" in i:  # 값이 비어 있어도 키가 있으면 PR
+        raise GitHubError(f"{number}번은 이슈가 아니라 PR임. PR은 여기서 닫거나 지우지 않음")
+    me = os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR)
+    return {"repo": repo, "number": i["number"], "title": i.get("title", ""), "state": i.get("state", ""),
+            "author": i["user"]["login"], "comments": i.get("comments", 0), "url": i.get("html_url", ""),
+            "node_id": i["node_id"], "mine": i["user"]["login"].lower() == me.lower()}
+
+
+def close_issue(repo: str, number: int) -> dict:
+    """닫기 (not planned). 다시 열 수 있음. 카드의 '닫기' 버튼에서만 불림."""
+    r = _post(f"/repos/{repo}/issues/{int(number)}", {"state": "closed", "state_reason": "not_planned"}, method="PATCH")
+    return {"state": r.get("state", "")}
+
+
+def delete_issue(repo: str, number: int) -> None:
+    """완전 삭제 (되돌릴 수 없음). 카드의 '삭제' 버튼을 두 번 눌렀을 때만 불림.
+    누른 순간 작성자를 다시 확인해서 내가 쓴 이슈가 아니면 안 지움."""
+    info = get_issue(repo, number)
+    if not info["mine"]:
+        raise GitHubError(f"{info['author']}가 쓴 이슈라서 안 지움 (내가 쓴 이슈만 삭제 가능). 필요하면 닫기를 쓸 것")
+    q = "mutation($id: ID!) { deleteIssue(input: {issueId: $id}) { clientMutationId } }"
+    r = _post("/graphql", {"query": q, "variables": {"id": info["node_id"]}})
+    if r.get("errors"):  # GraphQL 은 실패해도 200 으로 오고 errors 에 이유가 담김
+        msg = r["errors"][0].get("message", "")
+        if "permission" in msg.lower() or r["errors"][0].get("type") == "FORBIDDEN":
+            raise GitHubError("삭제 권한이 없음 (저장소 admin이어야 하고, 토큰 권한이 모자랄 수 있음). "
+                              "GitHub 웹의 이슈 화면 오른쪽 아래 'Delete issue'로 지우거나 닫기를 쓸 것")
+        raise GitHubError(f"삭제 실패: {msg[:150]}")
+
+
+@tool
+def draft_issue_removal(number: int, repo: str = "") -> str:
+    """GitHub 이슈를 닫거나 삭제하기 위한 '확인 카드'를 화면에 띄웁니다. 이 도구는 닫지도 지우지도 않습니다.
+    사용자가 카드에서 이슈 내용을 확인하고 '닫기' 또는 '삭제'(두 번 확인) 버튼을 눌러야 실제로 처리됩니다.
+    삭제는 되돌릴 수 없고 사용자가 쓴 이슈만 가능하며, 닫기는 다시 열 수 있습니다.
+    사용자가 이슈를 닫거나 지워 달라고 할 때 씁니다. 이미 닫았다/지웠다고 말하지 마세요.
+    이슈 번호를 모르면 먼저 물어보세요 (번호를 추측하지 말 것).
+
+    Args:
+        number: 이슈 번호 (예: 2). GitHub 주소의 /issues/ 뒤 숫자.
+        repo: 저장소. 빈 문자열이면 최종 프로젝트 팀 저장소. 이름이나 GitHub 주소도 됨.
+    """
+    try:
+        where = resolve_repo(repo or os.getenv("GITHUB_REPO", DEFAULT_REPO),
+                             os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR))
+        info = get_issue(where, number)
+    except (GitHubError, ValueError, TypeError) as e:
+        return str(e)
+    info["has_token"] = bool(os.getenv("GITHUB_TOKEN"))
+    head = f"{where} #{info['number']} '{info['title']}' (작성자 {info['author']}, {info['state']}, 댓글 {info['comments']}개)"
+    if ISSUE_REMOVAL_HANDLER is None:
+        return f"{head} — 이 화면에는 닫기·삭제 버튼이 없어서 처리 못 함. 웹 화면에서 다시 요청하거나 GitHub에서 직접 할 것"
+    ISSUE_REMOVAL_HANDLER(info)
+    note = "" if info["mine"] else " 사용자가 쓴 이슈가 아니라서 삭제는 막혀 있고 닫기만 가능함."
+    return (f"{head} 확인 카드를 화면에 띄움. 아직 아무것도 안 바뀜. 사용자에게 카드에서 확인하고 "
+            "'닫기'(다시 열 수 있음) 또는 '삭제'(되돌릴 수 없음)를 누르라고 짧게 안내할 것." + note)
+
+
+GITHUB_TOOLS = [get_my_commits, draft_github_issue, draft_issue_removal]

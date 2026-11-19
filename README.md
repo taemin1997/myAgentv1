@@ -112,6 +112,8 @@ Notion이 초당 요청 수를 제한해서 더 빠르게는 안 됨. 이후엔 
 - 카드에서 고친 뒤 **GitHub에 올리기**를 눌러야 실제로 올라감. 모델은 초안만 만들 수 있고 직접 올리는 도구는 없음 (팀원 모두에게 알림이 가서)
 - `.env`의 `GITHUB_TOKEN`에 이슈 쓰기 권한 필요 (classic 토큰이면 `public_repo`). 조직 저장소에 fine-grained 토큰을 쓰면 조직 승인이 필요할 수 있음
 - 웹 화면에서만 됨. 터미널·예전 화면은 초안 글만 보여줌
+- 닫기·삭제: `팀 저장소 2번 이슈 지워줘` → 확인 카드(번호·제목·작성자·댓글 수). **닫기**는 다시 열 수 있고,
+  **🗑 삭제**는 되돌릴 수 없어서 3초 안에 두 번 눌러야 함. 삭제는 **내가 쓴 이슈만** 됨 (GraphQL `deleteIssue`, 저장소 admin 필요)
 
 ### 되돌리기 (`undo_last_update`)
 
@@ -175,7 +177,7 @@ myAgent/
 ├─ tools/               모델이 쓰는 도구 20개 (나중에 캐릭터 칸과 대응)
 │   ├─ __init__.py      도구 목록(ALL_TOOLS)·스키마·run_tool
 │   ├─ life.py          시간·계산·메모·할 일·날씨
-│   ├─ github.py        팀 저장소의 내 커밋 (get_my_commits, resolve_repo), 이슈 초안 (draft_github_issue)
+│   ├─ github.py        팀 저장소의 내 커밋 (get_my_commits, resolve_repo), 이슈 초안·닫기·삭제 (draft_github_issue, draft_issue_removal)
 │   └─ notion/          Notion 공부 노트
 │       ├─ client.py    요청·재시도·오류 메시지, DB 속성 이름
 │       ├─ blocks.py    블록 ↔ 텍스트/마크다운(표·체크박스), 블록 끼워 넣기

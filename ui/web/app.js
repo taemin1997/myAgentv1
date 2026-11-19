@@ -119,6 +119,13 @@
       case "issue_failed":
         issueResult(ev);
         break;
+      case "issue_removal": // 닫기·삭제 확인 카드
+        addRemovalCard(ev);
+        break;
+      case "issue_removed":
+      case "issue_remove_failed":
+        removalResult(ev);
+        break;
     }
   }
 
@@ -353,6 +360,71 @@
     c.lock();
     c.post.textContent = `✅ #${ev.number} 올림`;
     c.state.replaceChildren(Object.assign(el("a", "", ev.url), { href: ev.url }));
+  }
+
+  // 닫기·삭제 확인 카드. 삭제는 되돌릴 수 없어서 버튼을 두 번 눌러야 함 (첫 번째는 '정말?'으로 바뀌기만)
+  function addRemovalCard(c) {
+    const card = el("section", "card issue removal");
+    card.appendChild(el("div", "head", `🐙 이슈 닫기·삭제 → ${c.repo}`));
+    const info = el("div", "issue-info");
+    const link = Object.assign(el("a", "", `#${c.number} ${c.title}`), { href: c.url });
+    info.append(link, el("div", "sub",
+      `작성자 ${c.author}${c.mine ? " (나)" : ""} · ${c.state === "open" ? "열림" : "닫힘"} · 댓글 ${c.comments}개`));
+    card.appendChild(info);
+
+    const foot = el("div", "foot");
+    const close = el("button", "btn small", "닫기 (다시 열 수 있음)");
+    close.disabled = c.state !== "open";
+    const del = el("button", "btn small danger", "🗑 삭제");
+    del.disabled = !c.mine;
+    const state = el("span", "state", !c.has_token ? "⚠️ .env에 GITHUB_TOKEN이 없어서 지금은 못 해요"
+      : c.mine ? "삭제는 되돌릴 수 없어요. 댓글도 같이 사라져요"
+      : "내가 쓴 이슈가 아니라서 삭제는 막혀 있어요 (닫기만 가능)");
+    foot.append(close, del, state);
+    card.appendChild(foot);
+
+    let armed = false; // 삭제 첫 클릭 후 3초 안에 한 번 더 눌러야 진짜 삭제
+    let timer = null;
+    const run = async (action) => {
+      const r = await api.remove_issue(c.id, action);
+      if (!r.ok) return (state.textContent = r.message || "못 함");
+      close.disabled = del.disabled = true;
+      state.textContent = action === "delete" ? "삭제하는 중..." : "닫는 중...";
+    };
+    close.onclick = () => run("close");
+    del.onclick = () => {
+      if (!armed) {
+        armed = true;
+        del.textContent = "정말 삭제 (한 번 더)";
+        timer = setTimeout(() => { armed = false; del.textContent = "🗑 삭제"; }, 3000);
+        return;
+      }
+      clearTimeout(timer);
+      run("delete");
+    };
+    issues.set(c.id, { close, del, state, link, armedReset: () => { armed = false; del.textContent = "🗑 삭제"; } });
+    append(card);
+  }
+
+  function removalResult(ev) {
+    const c = issues.get(ev.id);
+    if (!c) return;
+    if (ev.type === "issue_remove_failed") {
+      c.close.disabled = false;
+      c.del.disabled = false;
+      c.armedReset();
+      c.state.textContent = "⚠️ " + ev.message;
+      return;
+    }
+    if (ev.action === "delete") {
+      c.del.textContent = "✅ 삭제됨";
+      c.link.removeAttribute("href"); // 지운 이슈 링크는 404 라서 글자만 남김
+      c.link.classList.add("gone");
+      c.state.textContent = "이슈를 지웠어요";
+    } else {
+      c.close.textContent = "✅ 닫힘";
+      c.state.textContent = "닫았어요. GitHub에서 다시 열 수 있어요";
+    }
   }
 
   // ------------------------------------------------------------ 키·토큰 입력

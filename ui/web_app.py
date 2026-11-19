@@ -72,6 +72,7 @@ class Api:
         self._issues: dict[int, dict] = {}  # 이슈 카드 id → 초안 (저장소는 초안 때 확정한 걸 그대로 씀)
         # 모델이 draft_github_issue 를 부르면 여기로 → 화면에 이슈 카드. 실제 올리기는 post_issue(버튼)만
         github.ISSUE_DRAFT_HANDLER = self._on_issue_draft
+        github.ISSUE_REMOVAL_HANDLER = self._on_issue_removal  # 닫기·삭제 확인 카드 (처리는 버튼만)
 
     # ------------------------------------------------------------ 시작·상태
     def init(self) -> dict:
@@ -335,6 +336,39 @@ class Api:
                 self._emit("issue_failed", id=int(iid), message=str(e)[:200])
             finally:
                 draft["posting"] = False
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"ok": True}
+
+    def _on_issue_removal(self, info: dict) -> None:
+        iid = next(self._card_ids)
+        self._issues[iid] = {**info, "kind": "removal"}
+        # node_id 는 삭제할 때 파이썬 쪽에서 다시 받아서 쓰니 화면에는 안 보냄
+        self._emit("issue_removal", id=iid, **{k: v for k, v in info.items() if k != "node_id"})
+
+    def remove_issue(self, iid: int, action: str) -> dict:
+        """닫기·삭제 확인 카드의 버튼. action = 'close' | 'delete'.
+        삭제의 '두 번 확인'은 화면에서 하고, 내가 쓴 이슈인지는 github.delete_issue 가 누른 순간 다시 확인함."""
+        info = self._issues.get(int(iid))
+        if info is None or info.get("kind") != "removal" or action not in ("close", "delete"):
+            return {"ok": False, "message": "카드를 못 찾음"}
+        with self._lock:
+            if info.get("posting") or info.get("done"):
+                return {"ok": False, "message": "이미 처리 중이거나 처리했어요"}
+            info["posting"] = True
+
+        def run():
+            try:
+                if action == "close":
+                    github.close_issue(info["repo"], info["number"])
+                else:
+                    github.delete_issue(info["repo"], info["number"])
+                info["done"] = action
+                self._emit("issue_removed", id=int(iid), action=action)
+            except Exception as e:
+                self._emit("issue_remove_failed", id=int(iid), message=str(e)[:200])
+            finally:
+                info["posting"] = False
 
         threading.Thread(target=run, daemon=True).start()
         return {"ok": True}

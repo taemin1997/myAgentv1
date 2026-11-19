@@ -63,6 +63,13 @@
       const shown = (text.trim() || "첨부한 자료 내용을 공부 노트로 정리해줘.") + atts.map((a) => "\n" + a.summary).join("");
       atts = [];
       if (/갱신/.test(text)) push({ type: "heavy", text: "⚡ 갱신 작업이라 상위 모델로 전환", model: "gpt-5.4" });
+      if (/삭제|닫/.test(text)) { // 닫기·삭제 카드 흐름 확인용
+        later(300, () => push({ type: "issue_removal", id: 901, repo: "SKNETWORKS-FAMILY-AICAMP/SKN35-FINAL-4TEAM",
+          number: 2, title: "Git issue 테스트", state: "open", author: "taemin1997", comments: 0,
+          url: "https://github.com/example/repo/issues/2", mine: true, has_token: true }));
+        later(500, () => stream("2번 이슈 확인 카드를 띄웠어. 닫을지 지울지 카드에서 골라줘."));
+        return { ok: true, shown: text };
+      }
       if (/이슈/.test(text)) { // 이슈 카드 흐름 확인용
         later(300, () => push({ type: "tool", name: "draft_github_issue", args: '{"title": "로그인 버튼 안 눌림"}' }));
         later(500, () => push({ type: "issue_draft", id: 900, repo: "SKNETWORKS-FAMILY-AICAMP/SKN35-FINAL-4TEAM",
@@ -97,6 +104,10 @@
     },
     post_issue: async (id) => {
       later(600, () => push({ type: "issue_posted", id, number: 42, url: "https://github.com/example/repo/issues/42" }));
+      return { ok: true };
+    },
+    remove_issue: async (id, action) => {
+      later(600, () => push({ type: "issue_removed", id, action }));
       return { ok: true };
     },
     save_card: async (id) => {

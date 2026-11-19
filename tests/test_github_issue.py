@@ -85,3 +85,91 @@ def test_web_card_posts_once(monkeypatch):
     assert sent == ["버그(수정)"]  # 카드에서 고친 제목으로 올라감
     assert api.post_issue(ev["id"], "또", "", "")["ok"] is False  # 올린 카드는 다시 못 올림
     assert api.post_issue(999, "없는 카드", "", "")["ok"] is False
+
+
+# ------------------------------------------------------------ 닫기·삭제
+def _issue(author="taemin1997", pr=False):
+    i = {"number": 2, "title": "테스트", "state": "open", "user": {"login": author}, "comments": 0,
+         "html_url": "https://github.com/o/r/issues/2", "node_id": "I_node2"}
+    if pr:
+        i["pull_request"] = {}
+    return i
+
+
+def test_model_cannot_close_or_delete_directly():
+    assert "draft_issue_removal" in TOOLS_BY_NAME
+    assert not {"close_issue", "delete_issue"} & set(TOOLS_BY_NAME)
+
+
+def test_removal_card_shows_issue(monkeypatch):
+    got = []
+    monkeypatch.setattr(github, "ISSUE_REMOVAL_HANDLER", got.append)
+    monkeypatch.setattr(github, "_get", lambda path: _issue())
+    out = github.draft_issue_removal(2, repo=REPO)
+    assert "아직 아무것도 안 바뀜" in out
+    assert got[0]["number"] == 2 and got[0]["mine"] is True and got[0]["node_id"] == "I_node2"
+
+
+def test_removal_refuses_pr(monkeypatch):
+    monkeypatch.setattr(github, "_get", lambda path: _issue(pr=True))
+    assert "PR" in github.draft_issue_removal(2, repo=REPO)
+
+
+def test_delete_only_my_issue(monkeypatch):
+    sent = []
+    monkeypatch.setattr(github, "_post", lambda path, payload, method="POST": sent.append(path) or {})
+    monkeypatch.setattr(github, "_get", lambda path: _issue(author="teammate"))
+    try:
+        github.delete_issue(REPO, 2)
+    except github.GitHubError as e:
+        assert "teammate" in str(e)
+    else:
+        raise AssertionError("팀원 이슈를 지우면 안 됨")
+    assert sent == []  # 삭제 요청 자체를 안 보냄
+
+
+def test_delete_and_close_requests(monkeypatch):
+    sent = []
+
+    def fake_post(path, payload, method="POST"):
+        sent.append((method, path, payload))
+        return {"data": {"deleteIssue": {}}} if path == "/graphql" else {"state": "closed"}
+
+    monkeypatch.setattr(github, "_post", fake_post)
+    monkeypatch.setattr(github, "_get", lambda path: _issue())
+    github.delete_issue(REPO, 2)
+    github.close_issue(REPO, 2)
+    assert sent[0][1] == "/graphql" and sent[0][2]["variables"] == {"id": "I_node2"}
+    assert sent[1] == ("PATCH", f"/repos/{REPO}/issues/2", {"state": "closed", "state_reason": "not_planned"})
+
+
+def test_delete_graphql_permission_error(monkeypatch):
+    monkeypatch.setattr(github, "_get", lambda path: _issue())
+    monkeypatch.setattr(github, "_post", lambda *a, **k: {"errors": [{"type": "FORBIDDEN", "message": "no permission"}]})
+    try:
+        github.delete_issue(REPO, 2)
+    except github.GitHubError as e:
+        assert "권한" in str(e)
+    else:
+        raise AssertionError("GraphQL errors 를 성공으로 보면 안 됨")
+
+
+def test_web_removal_card_runs_once(monkeypatch):
+    import ui.web_app as W
+
+    calls = []
+    monkeypatch.setattr(github, "_get", lambda path: _issue())
+    monkeypatch.setattr(github, "_post", lambda path, payload, method="POST": (time.sleep(0.05), calls.append(path))[1] or {})
+    api = W.Api()
+    github.draft_issue_removal(2, repo=REPO)
+    ev = [e for e in api.poll()["events"] if e["type"] == "issue_removal"][0]
+    assert "node_id" not in ev  # 화면엔 안 보냄
+    assert api.remove_issue(ev["id"], "wipe")["ok"] is False  # 모르는 동작
+    assert api.remove_issue(ev["id"], "delete")["ok"]
+    assert api.remove_issue(ev["id"], "delete")["ok"] is False  # 두 번 안 지움
+    deadline, events = time.time() + 3, []
+    while time.time() < deadline and not any(e["type"] == "issue_removed" for e in events):
+        time.sleep(0.02)
+        events += api.poll()["events"]
+    assert calls == ["/graphql"]
+    assert api.remove_issue(ev["id"], "close")["ok"] is False  # 지운 카드는 끝
