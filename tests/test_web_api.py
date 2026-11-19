@@ -45,7 +45,8 @@ def test_file_dialog_types_are_valid():
 def test_only_intended_methods_are_exposed():
     exposed = {n for n in dir(W.Api) if not n.startswith("_")}
     assert exposed == {"init", "poll", "save_api_key", "save_notion_token", "open_url", "new_chat", "send",
-                       "pick_files", "add_files", "attachments", "clear_attachments", "make_note_cards", "save_card"}
+                       "pick_files", "add_files", "attachments", "clear_attachments", "make_note_cards", "save_card",
+                       "post_issue"}
 
 
 def test_send_streams_events_in_order(api):

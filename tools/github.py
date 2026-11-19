@@ -11,7 +11,14 @@
 
 [요청 한도]
 토큰 없이 공개 저장소를 읽으면 시간당 60번까지. 하루 갱신 한 번에 10~20번 정도 씀.
-더 필요하면 .env에 GITHUB_TOKEN(읽기 권한만) 넣으면 시간당 5000번.
+더 필요하면 .env에 GITHUB_TOKEN 넣으면 시간당 5000번.
+
+[이슈 올리기]
+이슈는 팀원 모두가 보고 알림도 가서, 모델이 혼자 올리면 안 됨. 그래서 두 단계로 나눔:
+  1) 모델은 draft_github_issue 로 '초안'만 만듦 → 화면에 이슈 카드가 뜸
+  2) 사용자가 카드에서 제목·본문을 확인(수정)하고 'GitHub에 올리기'를 눌러야 create_issue 가 불림
+create_issue 는 도구 목록(ALL_TOOLS)에 없어서 모델이 직접 부를 방법이 없음.
+쓰기는 인증이 꼭 필요함 → GITHUB_TOKEN 에 이슈 쓰기 권한(classic 토큰이면 public_repo) 필요.
 """
 
 import json
@@ -20,6 +27,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
+from typing import Callable
 
 from core.toolkit import tool
 
@@ -47,6 +55,33 @@ def _get(path: str):
             raise GitHubError("GitHub 요청 한도(시간당 60번)를 다 씀. 한 시간 뒤에 다시 하거나 .env에 GITHUB_TOKEN을 넣으면 됨")
         if e.code == 404:
             raise GitHubError("저장소를 못 찾음 (이름이 틀렸거나 비공개 저장소면 GITHUB_TOKEN 필요)")
+        raise GitHubError(f"GitHub 오류 {e.code}")
+    except urllib.error.URLError as e:
+        raise GitHubError(f"GitHub 연결 실패: {e.reason}")
+
+
+def _post(path: str, payload: dict):
+    """쓰기 요청. 읽기(_get)와 달리 토큰이 없으면 아예 안 보냄 (어차피 401이라 요청 한도만 날림)."""
+    token = os.getenv("GITHUB_TOKEN")
+    if not token:
+        raise GitHubError("이슈를 올리려면 .env에 GITHUB_TOKEN이 필요함 (classic 토큰이면 public_repo 권한)")
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "my-agent",
+               "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    req = urllib.request.Request(API + path, data=json.dumps(payload).encode(), headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        # 오류 이유를 사람이 알아들을 말로 (토큰 값은 절대 메시지에 안 넣음)
+        if e.code == 401:
+            raise GitHubError("GitHub 토큰이 틀렸거나 만료됨 (.env의 GITHUB_TOKEN 확인)")
+        if e.code in (403, 404):
+            raise GitHubError("이 저장소에 이슈를 쓸 권한이 없음. 토큰 권한(이슈 쓰기/public_repo)과 "
+                              "팀 저장소 협업자인지 확인 (조직 저장소는 fine-grained 토큰이면 조직 승인이 필요할 수 있음)")
+        if e.code == 410:
+            raise GitHubError("이 저장소는 이슈 기능이 꺼져 있음")
+        if e.code == 422:
+            raise GitHubError("GitHub가 내용을 거절함 (제목이 비었거나 라벨 형식이 이상함)")
         raise GitHubError(f"GitHub 오류 {e.code}")
     except urllib.error.URLError as e:
         raise GitHubError(f"GitHub 연결 실패: {e.reason}")
@@ -157,4 +192,66 @@ def get_my_commits(date: str = "", days: int = 1, repo: str = "", author: str = 
     return "\n".join(lines)
 
 
-GITHUB_TOOLS = [get_my_commits]
+# ------------------------------------------------------------ 이슈
+# 화면이 '이슈 초안이 생겼다'는 걸 받는 자리. 웹 화면(ui/web_app.Api)이 켜질 때 자기 함수를 넣음.
+# 비어 있으면(터미널·예전 화면) 올리기 버튼이 없어서 초안만 보여주고 끝냄.
+ISSUE_DRAFT_HANDLER: Callable[[dict], None] | None = None
+
+
+def _split_labels(labels: str) -> list[str]:
+    return [l.strip() for l in (labels or "").replace("，", ",").split(",") if l.strip()]
+
+
+def create_issue(title: str, body: str = "", labels: str = "", repo: str = "") -> dict:
+    """실제로 이슈를 올림. 사용자가 카드의 'GitHub에 올리기'를 눌렀을 때만 불림 (모델 도구 아님).
+    반환: {"number", "url"}"""
+    title = (title or "").strip()
+    if not title:
+        raise GitHubError("제목이 비어 있음")
+    repo = repo or os.getenv("GITHUB_REPO", DEFAULT_REPO)
+    if repo.count("/") != 1:  # 카드에는 draft 때 확정한 owner/name이 오지만, 혹시 몰라서
+        repo = resolve_repo(repo, os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR))
+    payload = {"title": title, "body": (body or "").strip()}
+    if label_list := _split_labels(labels):
+        payload["labels"] = label_list
+    r = _post(f"/repos/{repo}/issues", payload)
+    return {"number": r.get("number"), "url": r.get("html_url", "")}
+
+
+@tool
+def draft_github_issue(title: str, body: str, labels: str = "", repo: str = "") -> str:
+    """팀 GitHub 저장소에 올릴 이슈 '초안'을 만들어 화면에 카드로 띄웁니다. 이 도구는 이슈를 올리지 않습니다.
+    사용자가 카드에서 내용을 확인하고 'GitHub에 올리기' 버튼을 눌러야 실제로 올라갑니다.
+    사용자가 이슈를 작성·등록·올려 달라고 할 때 씁니다. 이미 올렸다고 말하지 마세요.
+    본문은 마크다운으로, 사용자가 말한 내용과 대화·자료에 있는 사실만 쓰세요 (모르는 칸은 비우거나 '(직접 작성)').
+    보통 '## 배경', '## 할 일'(- [ ] 체크리스트), '## 완료 기준' 순서. 버그면 '## 재현 방법', '## 기대 동작', '## 실제 동작'.
+    제목은 한 줄로 무엇을 할지/무엇이 문제인지. 라벨은 사용자가 말했을 때만.
+
+    Args:
+        title: 이슈 제목 (한 줄)
+        body: 이슈 본문 (마크다운)
+        labels: 라벨, 쉼표로 구분 (예: 'bug, frontend'). 없으면 빈 문자열.
+        repo: 저장소. 빈 문자열이면 최종 프로젝트 팀 저장소. 이름만 써도 됨.
+    """
+    title = (title or "").strip()
+    if not title:
+        return "제목이 비어 있음. 제목을 정해서 다시 부를 것"
+    try:
+        # 저장소는 초안 때 확정해 둠 → 올리기 버튼에서 다시 찾느라 요청 한도를 안 씀
+        where = resolve_repo(repo or os.getenv("GITHUB_REPO", DEFAULT_REPO),
+                             os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR))
+    except GitHubError as e:
+        return str(e)
+    draft = {"repo": where, "title": title, "body": (body or "").strip(), "labels": ", ".join(_split_labels(labels)),
+             "has_token": bool(os.getenv("GITHUB_TOKEN"))}
+    if ISSUE_DRAFT_HANDLER is None:
+        return (f"이슈 초안 ({where}) — 이 화면에는 올리기 버튼이 없어서 올리지 못함. "
+                "웹 화면(uv run app.py)에서 다시 요청하거나 GitHub에서 직접 붙여 넣을 것.\n"
+                f"제목: {title}\n{draft['body']}")
+    ISSUE_DRAFT_HANDLER(draft)
+    note = "" if draft["has_token"] else " 단, .env에 GITHUB_TOKEN이 없어서 지금은 올리기가 실패함 (토큰 설정 안내할 것)."
+    return (f"{where}에 올릴 이슈 초안을 화면에 카드로 띄움. 아직 안 올라갔음. "
+            "사용자에게 카드에서 확인·수정 후 'GitHub에 올리기'를 누르라고 짧게 안내하고, 본문을 다시 붙여넣지 말 것." + note)
+
+
+GITHUB_TOOLS = [get_my_commits, draft_github_issue]

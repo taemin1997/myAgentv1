@@ -29,6 +29,7 @@ import openai
 import webview
 from webview.dom import DOMEventHandler
 
+import tools.github as github
 import tools.notion as notion_tools
 from core import usage
 from core.agent import HEAVY_MODEL, MODEL, friendly_error, new_conversation, run_turn, summarize_pdfs
@@ -68,6 +69,9 @@ class Api:
         self._conv_base = usage.SESSION["cost"]  # '이번 대화' 비용 = 지금 합계 - 대화 시작 때 합계
         self._usage_key = None
         self._usage_cache: dict = {}
+        self._issues: dict[int, dict] = {}  # 이슈 카드 id → 초안 (저장소는 초안 때 확정한 걸 그대로 씀)
+        # 모델이 draft_github_issue 를 부르면 여기로 → 화면에 이슈 카드. 실제 올리기는 post_issue(버튼)만
+        github.ISSUE_DRAFT_HANDLER = self._on_issue_draft
 
     # ------------------------------------------------------------ 시작·상태
     def init(self) -> dict:
@@ -299,6 +303,38 @@ class Api:
                 self._emit("card_saved", id=int(cid), url=r.get("url", ""))
             except Exception as e:
                 self._emit("card_failed", id=int(cid), message=str(e)[:120])
+
+        threading.Thread(target=run, daemon=True).start()
+        return {"ok": True}
+
+    # ------------------------------------------------------------ GitHub 이슈 카드
+    def _on_issue_draft(self, draft: dict) -> None:
+        """작업 스레드(도구 실행 중)에서 불림 → 큐에 넣기만, 카드는 화면이 그림."""
+        iid = next(self._card_ids)
+        self._issues[iid] = draft
+        self._emit("issue_draft", id=iid, **draft)
+
+    def post_issue(self, iid: int, title: str, body: str, labels: str) -> dict:
+        """이슈 카드의 'GitHub에 올리기'. 사람이 버튼을 눌렀을 때만 여기로 옴 (모델은 못 부름).
+        같은 카드를 두 번 눌러 이슈가 두 개 생기지 않게 올리는 중·올린 카드는 막음."""
+        draft = self._issues.get(int(iid))
+        title = (title or "").strip()
+        if draft is None or not title:
+            return {"ok": False, "message": "제목이 필요해요"}
+        with self._lock:
+            if draft.get("posting") or draft.get("url"):
+                return {"ok": False, "message": "이미 올리는 중이거나 올렸어요"}
+            draft["posting"] = True
+
+        def run():
+            try:
+                r = github.create_issue(title, body, labels, draft["repo"])
+                draft["url"] = r["url"]
+                self._emit("issue_posted", id=int(iid), url=r["url"], number=r["number"])
+            except Exception as e:  # GitHubError 메시지에는 토큰 값이 안 들어감
+                self._emit("issue_failed", id=int(iid), message=str(e)[:200])
+            finally:
+                draft["posting"] = False
 
         threading.Thread(target=run, daemon=True).start()
         return {"ok": True}

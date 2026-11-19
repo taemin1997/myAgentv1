@@ -44,6 +44,9 @@ def isolate(tmp_path, monkeypatch):
     for mod in _SYNC_USERS:
         monkeypatch.setattr(mod, "start_background_sync", lambda: False)
     monkeypatch.setattr(github, "_get", _blocked)
+    monkeypatch.setattr(github, "_post", _blocked)  # 이슈 쓰기는 특히 진짜로 나가면 팀원에게 알림이 감
+    monkeypatch.setattr(github, "ISSUE_DRAFT_HANDLER", None)  # 웹 Api 가 바꿔 놓은 게 다음 테스트로 안 새게
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)  # 내 .env 토큰 유무가 테스트 결과를 바꾸지 않게
     monkeypatch.setenv("NOTION_TOKEN", "test-token-not-real")
     nhistory._CREATED.clear()
     return tmp_path

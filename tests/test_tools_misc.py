@@ -30,7 +30,7 @@ def test_tool_schema_from_signature_and_docstring():
 
 def test_all_tools_have_descriptions_and_unique_names():
     names = [s["function"]["name"] for s in TOOL_SCHEMAS]
-    assert len(names) == len(set(names)) == len(ALL_TOOLS) == 20
+    assert len(names) == len(set(names)) == len(ALL_TOOLS) == 21
     assert all(s["function"]["description"] for s in TOOL_SCHEMAS)
 
 

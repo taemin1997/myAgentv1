@@ -157,6 +157,12 @@ button, select, textarea, input { font: inherit; color: inherit; }
 .card .preview { overflow-y: auto; }
 .card .foot { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); flex-wrap: wrap; }
 .card .foot .state { word-break: break-all; }
+/* 이슈 카드: 제목·라벨은 한 줄씩 꽉 차게, 본문은 노트 카드보다 짧게 (이슈는 보통 짧아서) */
+.card.issue input[type=text] {
+  width: 100%; padding: 5px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg);
+}
+.card.issue .issue-title { font-weight: 600; }
+.card.issue textarea, .card.issue .preview { min-height: 160px; }
 
 /* ---------- 상태줄·입력 ---------- */
 .status { min-height: 22px; padding: 0 16px; font-size: 12.5px; color: var(--muted); }

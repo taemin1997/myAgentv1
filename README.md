@@ -104,7 +104,14 @@ Notion이 초당 요청 수를 제한해서 더 빠르게는 안 됨. 이후엔 
 - 커밋 메시지 + 바뀐 파일(+추가/-삭제)을 근거로 요약. 커밋에 없는 내용은 안 씀
 - 채팅으로도 됨: `11/16 내 커밋 보여줘`, `이번 주 내가 커밋한 거 정리해줘`
 - 기본 저장소·아이디는 `.env`의 `GITHUB_REPO`, `GITHUB_AUTHOR`로 바꿀 수 있음
-- 토큰 없이 시간당 60번 요청 가능 (하루 갱신에 10~20번). 모자라면 `GITHUB_TOKEN`(읽기 전용) 추가
+- 토큰 없이 시간당 60번 요청 가능 (하루 갱신에 10~20번). 모자라면 `GITHUB_TOKEN` 추가
+
+### 이슈 올리기 (`draft_github_issue`)
+
+- 채팅으로 `로그인 버튼이 모바일에서 안 눌리는 거 이슈로 올려줘` → 모델이 제목·본문(마크다운)·라벨 초안을 만들어 **이슈 카드**를 띄움
+- 카드에서 고친 뒤 **GitHub에 올리기**를 눌러야 실제로 올라감. 모델은 초안만 만들 수 있고 직접 올리는 도구는 없음 (팀원 모두에게 알림이 가서)
+- `.env`의 `GITHUB_TOKEN`에 이슈 쓰기 권한 필요 (classic 토큰이면 `public_repo`). 조직 저장소에 fine-grained 토큰을 쓰면 조직 승인이 필요할 수 있음
+- 웹 화면에서만 됨. 터미널·예전 화면은 초안 글만 보여줌
 
 ### 되돌리기 (`undo_last_update`)
 
@@ -168,7 +175,7 @@ myAgent/
 ├─ tools/               모델이 쓰는 도구 20개 (나중에 캐릭터 칸과 대응)
 │   ├─ __init__.py      도구 목록(ALL_TOOLS)·스키마·run_tool
 │   ├─ life.py          시간·계산·메모·할 일·날씨
-│   ├─ github.py        팀 저장소의 내 커밋 (get_my_commits, resolve_repo)
+│   ├─ github.py        팀 저장소의 내 커밋 (get_my_commits, resolve_repo), 이슈 초안 (draft_github_issue)
 │   └─ notion/          Notion 공부 노트
 │       ├─ client.py    요청·재시도·오류 메시지, DB 속성 이름
 │       ├─ blocks.py    블록 ↔ 텍스트/마크다운(표·체크박스), 블록 끼워 넣기

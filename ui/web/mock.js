@@ -63,6 +63,14 @@
       const shown = (text.trim() || "첨부한 자료 내용을 공부 노트로 정리해줘.") + atts.map((a) => "\n" + a.summary).join("");
       atts = [];
       if (/갱신/.test(text)) push({ type: "heavy", text: "⚡ 갱신 작업이라 상위 모델로 전환", model: "gpt-5.4" });
+      if (/이슈/.test(text)) { // 이슈 카드 흐름 확인용
+        later(300, () => push({ type: "tool", name: "draft_github_issue", args: '{"title": "로그인 버튼 안 눌림"}' }));
+        later(500, () => push({ type: "issue_draft", id: 900, repo: "SKNETWORKS-FAMILY-AICAMP/SKN35-FINAL-4TEAM",
+          title: "로그인 버튼이 모바일에서 안 눌림", labels: "bug",
+          body: "## 재현 방법\n1. 모바일 크기로 접속\n2. 로그인 버튼 누르기\n\n## 기대 동작\n로그인 창이 열림\n\n## 할 일\n- [ ] 원인 확인", has_token: true }));
+        later(700, () => { stream("이슈 초안을 카드로 띄웠어. 확인하고 **GitHub에 올리기**를 눌러줘."); });
+        return { ok: true, shown: text };
+      }
       later(300, () => push({ type: "tool", name: "search_study_notes", args: '{"query": "그래디언트 소실", "limit": 5}' }));
       later(700, () => stream(SAMPLE));
       return { ok: true, shown };
@@ -86,6 +94,10 @@
       cards.forEach((c) => later(1200, () => push({ type: "card_draft", id: c.id, text: SAMPLE })));
       atts = [];
       return { ok: true, cards, attachments: { items: [], templates } };
+    },
+    post_issue: async (id) => {
+      later(600, () => push({ type: "issue_posted", id, number: 42, url: "https://github.com/example/repo/issues/42" }));
+      return { ok: true };
     },
     save_card: async (id) => {
       later(600, () => push({ type: "card_saved", id, url: "https://www.notion.so/example" }));

@@ -112,6 +112,13 @@
       case "card_failed":
         cardFailed(ev);
         break;
+      case "issue_draft": // 모델이 만든 이슈 초안 → 확인 카드 (올리기는 사람이 버튼으로만)
+        addIssueCard(ev);
+        break;
+      case "issue_posted":
+      case "issue_failed":
+        issueResult(ev);
+        break;
     }
   }
 
@@ -290,6 +297,64 @@
     c.state.textContent = "⚠️ " + ev.message;
   }
 
+  // ------------------------------------------------------------ GitHub 이슈 카드
+  // 이슈는 팀원 모두에게 알림이 가서, 모델은 초안만 만들고 실제로 올리는 건 이 카드의 버튼뿐
+  const issues = new Map(); // 카드 id → 화면 요소들
+  function addIssueCard(c) {
+    const card = el("section", "card issue");
+    card.appendChild(el("div", "head", "🐙 GitHub 이슈 초안 → " + c.repo));
+
+    const title = Object.assign(el("input", "issue-title"), { type: "text", value: c.title, placeholder: "제목" });
+    const labels = Object.assign(el("input", "issue-labels"), { type: "text", value: c.labels || "",
+      placeholder: "라벨 (쉼표로 구분, 없으면 비움)" });
+    const text = el("textarea");
+    text.value = c.body;
+    const preview = el("div", "preview md");
+    preview.hidden = true;
+    card.append(title, labels, text, preview);
+
+    const foot = el("div", "foot");
+    const post = el("button", "btn small primary", "GitHub에 올리기");
+    const toggle = el("button", "btn small ghost", "미리보기");
+    toggle.onclick = () => {
+      const show = preview.hidden;
+      if (show) preview.innerHTML = window.renderMarkdown(text.value);
+      preview.hidden = !show;
+      text.hidden = show;
+      toggle.textContent = show ? "고치기" : "미리보기";
+    };
+    const drop = el("button", "btn small ghost", "버리기");
+    const state = el("span", "state", c.has_token
+      ? "내용 확인 후 올리세요 (직접 수정 가능). 팀원 모두에게 알림이 가요"
+      : "⚠️ .env에 GITHUB_TOKEN(이슈 쓰기 권한)이 없어서 지금은 못 올려요");
+    foot.append(post, toggle, drop, state);
+    card.appendChild(foot);
+
+    const lock = () => { title.readOnly = labels.readOnly = text.readOnly = true; post.disabled = drop.disabled = true; };
+    drop.onclick = () => { lock(); post.textContent = "버림"; state.textContent = "올리지 않았어요"; };
+    post.onclick = async () => {
+      const r = await api.post_issue(c.id, title.value, text.value, labels.value);
+      if (!r.ok) return (state.textContent = r.message || "못 올림");
+      post.disabled = drop.disabled = true;
+      state.textContent = "올리는 중...";
+    };
+    issues.set(c.id, { post, drop, state, lock });
+    append(card);
+  }
+
+  function issueResult(ev) {
+    const c = issues.get(ev.id);
+    if (!c) return;
+    if (ev.type === "issue_failed") {
+      c.post.disabled = c.drop.disabled = false;
+      c.state.textContent = "⚠️ " + ev.message;
+      return;
+    }
+    c.lock();
+    c.post.textContent = `✅ #${ev.number} 올림`;
+    c.state.replaceChildren(Object.assign(el("a", "", ev.url), { href: ev.url }));
+  }
+
   // ------------------------------------------------------------ 키·토큰 입력
   const SECRETS = {
     key: { title: "OpenAI API 키", desc: "OpenAI API 키를 입력하세요.\n(.env 파일에 저장됩니다)", save: "save_api_key" },
@@ -329,6 +394,7 @@
       if (!r.ok) return;
       chat.replaceChildren();
       cards.clear();
+      issues.clear();
       addBot(r.message);
     };
     $("btn-key").onclick = () => askSecret("key");
