@@ -84,7 +84,7 @@
 - GitHub 이슈: 모델은 `draft_github_issue`로 초안만 → 웹 화면 카드의 'GitHub에 올리기' 버튼(`Api.post_issue`)만 실제로 올림.
   `create_issue`는 도구 목록에 넣지 않음 (팀원 전체 알림이라 사람이 확인). 토큰에 이슈 쓰기 권한 필요 (2026-11-19)
   닫기·삭제도 같은 방식: `draft_issue_removal`(확인 카드) → 버튼(`Api.remove_issue`). 삭제는 두 번 클릭 + 내가 쓴 이슈만
-  (누른 순간 작성자 다시 확인). classic 토큰 `public_repo`로 삭제까지 됨 확인. 테스트 이슈 올리기·지우기는 내 저장소(myAgentv1)에서만
+  (누른 순간 작성자 다시 확인). 이슈는 제목으로 찾음 (번호는 PR과 같이 써서 헷갈림, `find_my_issues`). classic 토큰 `public_repo`로 삭제까지 됨 확인. 테스트 이슈 올리기·지우기는 내 저장소(myAgentv1)에서만
 - 대청소성 일회 작업(여러 페이지 일괄 수정, 표·토글 많은 페이지 새로 쓰기)은 앱이 아니라 Claude의 Notion 커넥터로 직접
 
 ## 고도화 현황
@@ -179,3 +179,4 @@
   긴 대화는 오래된 부분을 요약(`agent.compact_history`, 기본 24,000토큰 넘으면). 테스트 42개
 - 2026-11-19: GitHub 이슈 올리기 — 모델은 초안(`draft_github_issue`), 웹 화면 이슈 카드에서 사람이 'GitHub에 올리기'. 테스트 50개
 - 2026-11-19: 이슈 닫기·삭제 — `draft_issue_removal` 확인 카드, 삭제는 두 번 클릭·내가 쓴 이슈만 (GraphQL `deleteIssue`). 테스트 57개
+- 2026-11-19: 닫기·삭제할 이슈를 제목(일부)으로 찾기 (`find_my_issues`, PR 제외). 테스트 58개

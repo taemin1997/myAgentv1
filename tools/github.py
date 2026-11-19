@@ -304,21 +304,45 @@ def delete_issue(repo: str, number: int) -> None:
         raise GitHubError(f"삭제 실패: {msg[:150]}")
 
 
+def find_my_issues(repo: str, title: str = "") -> list[dict]:
+    """내가 쓴 이슈 중 제목에 title 이 들어간 것 (대소문자·공백 무시). 최근 것부터.
+    GitHub 번호는 이슈와 PR이 같이 써서(첫 이슈가 2번일 수 있음) 사람은 보통 번호 대신 제목으로 기억함.
+    /issues 목록에는 PR도 섞여 와서 뺌. 요청 1번으로 끝나게 최근 100개만 봄."""
+    me = os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR)
+    rows = _get(f"/repos/{repo}/issues?state=all&creator={urllib.parse.quote(me)}&per_page=100&sort=created")
+    key = "".join(title.lower().split())
+    return [{"number": i["number"], "title": i.get("title", ""), "state": i.get("state", "")}
+            for i in rows if "pull_request" not in i and key in "".join(i.get("title", "").lower().split())]
+
+
 @tool
-def draft_issue_removal(number: int, repo: str = "") -> str:
+def draft_issue_removal(title: str = "", number: int = 0, repo: str = "") -> str:
     """GitHub 이슈를 닫거나 삭제하기 위한 '확인 카드'를 화면에 띄웁니다. 이 도구는 닫지도 지우지도 않습니다.
     사용자가 카드에서 이슈 내용을 확인하고 '닫기' 또는 '삭제'(두 번 확인) 버튼을 눌러야 실제로 처리됩니다.
     삭제는 되돌릴 수 없고 사용자가 쓴 이슈만 가능하며, 닫기는 다시 열 수 있습니다.
     사용자가 이슈를 닫거나 지워 달라고 할 때 씁니다. 이미 닫았다/지웠다고 말하지 마세요.
-    이슈 번호를 모르면 먼저 물어보세요 (번호를 추측하지 말 것).
+    보통은 사용자가 말한 제목(일부만 있어도 됨)을 title 로 넘기세요. 번호는 사용자가 번호를 직접 말했을 때만
+    (이슈와 PR이 번호를 같이 써서 번호를 추측하면 엉뚱한 걸 고름). 여러 개가 걸리면 목록을 보여주고 어느 건지 물어보세요.
+    title 을 비우고 number 도 0이면 내 이슈 목록만 돌려줍니다.
 
     Args:
-        number: 이슈 번호 (예: 2). GitHub 주소의 /issues/ 뒤 숫자.
+        title: 이슈 제목 또는 제목 일부 (예: '로그인 버그'). 내가 쓴 이슈에서 찾음.
+        number: 이슈 번호. 사용자가 번호를 직접 말했을 때만. 아니면 0.
         repo: 저장소. 빈 문자열이면 최종 프로젝트 팀 저장소. 이름이나 GitHub 주소도 됨.
     """
     try:
         where = resolve_repo(repo or os.getenv("GITHUB_REPO", DEFAULT_REPO),
                              os.getenv("GITHUB_AUTHOR", DEFAULT_AUTHOR))
+        if not number:
+            found = find_my_issues(where, title)
+            # 0개·여러 개거나 제목 없이 불렀으면 카드를 안 띄우고 목록으로 되물음
+            if len(found) != 1 or not title.strip():
+                listed = "\n".join(f"- #{f['number']} {f['title']} ({f['state']})" for f in found[:15])
+                if not found:
+                    return f"{where}에서 내가 쓴 이슈 중 '{title}'가 들어간 게 없음. 제목을 다시 물어볼 것"
+                what = f"'{title}'로 찾은 내 이슈" if title.strip() else "내가 쓴 이슈"
+                return f"{where}에서 {what} {len(found)}개. 어느 건지 물어볼 것:\n{listed}"
+            number = found[0]["number"]
         info = get_issue(where, number)
     except (GitHubError, ValueError, TypeError) as e:
         return str(e)

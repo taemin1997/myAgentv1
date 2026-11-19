@@ -105,14 +105,14 @@ def test_removal_card_shows_issue(monkeypatch):
     got = []
     monkeypatch.setattr(github, "ISSUE_REMOVAL_HANDLER", got.append)
     monkeypatch.setattr(github, "_get", lambda path: _issue())
-    out = github.draft_issue_removal(2, repo=REPO)
+    out = github.draft_issue_removal(number=2, repo=REPO)
     assert "아직 아무것도 안 바뀜" in out
     assert got[0]["number"] == 2 and got[0]["mine"] is True and got[0]["node_id"] == "I_node2"
 
 
 def test_removal_refuses_pr(monkeypatch):
     monkeypatch.setattr(github, "_get", lambda path: _issue(pr=True))
-    assert "PR" in github.draft_issue_removal(2, repo=REPO)
+    assert "PR" in github.draft_issue_removal(number=2, repo=REPO)
 
 
 def test_delete_only_my_issue(monkeypatch):
@@ -161,7 +161,7 @@ def test_web_removal_card_runs_once(monkeypatch):
     monkeypatch.setattr(github, "_get", lambda path: _issue())
     monkeypatch.setattr(github, "_post", lambda path, payload, method="POST": (time.sleep(0.05), calls.append(path))[1] or {})
     api = W.Api()
-    github.draft_issue_removal(2, repo=REPO)
+    github.draft_issue_removal(number=2, repo=REPO)
     ev = [e for e in api.poll()["events"] if e["type"] == "issue_removal"][0]
     assert "node_id" not in ev  # 화면엔 안 보냄
     assert api.remove_issue(ev["id"], "wipe")["ok"] is False  # 모르는 동작
@@ -173,3 +173,27 @@ def test_web_removal_card_runs_once(monkeypatch):
         events += api.poll()["events"]
     assert calls == ["/graphql"]
     assert api.remove_issue(ev["id"], "close")["ok"] is False  # 지운 카드는 끝
+
+
+def test_removal_by_title(monkeypatch):
+    # 번호 대신 제목 일부로 찾기. PR(#1)은 목록에 섞여 와도 빼야 함
+    rows = [{"number": 1, "title": "Git 환경설정", "state": "closed", "pull_request": {}, "user": {"login": "taemin1997"}},
+            {"number": 2, "title": "Git issue 테스트", "state": "open", "user": {"login": "taemin1997"}},
+            {"number": 5, "title": "로그인 버그", "state": "open", "user": {"login": "taemin1997"}}]
+    paths = []
+
+    def fake_get(path):
+        paths.append(path)
+        return rows if "/issues?" in path else _issue()
+
+    got = []
+    monkeypatch.setattr(github, "_get", fake_get)
+    monkeypatch.setattr(github, "ISSUE_REMOVAL_HANDLER", got.append)
+
+    assert "확인 카드" in github.draft_issue_removal("issue 테스트", repo=REPO)  # 공백·대소문자 무시
+    assert paths[-1] == f"/repos/{REPO}/issues/2" and len(got) == 1
+    many = github.draft_issue_removal("git", repo=REPO)  # PR은 빠져서 1개 → 카드
+    assert "확인 카드" in many and len(got) == 2
+    listing = github.draft_issue_removal(repo=REPO)  # 제목 없이 → 목록만, 카드 안 띄움
+    assert "#2" in listing and "#5" in listing and "#1 " not in listing and len(got) == 2
+    assert "없음" in github.draft_issue_removal("없는 제목", repo=REPO)
